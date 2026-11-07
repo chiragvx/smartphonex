@@ -1,0 +1,312 @@
+# Smartphone-Based Modular Unmanned Vehicle Controller
+
+## Initial Project Plan --- Virtual RC Car Prototype
+
+**Project goal:** Build a low-cost, modular platform that repurposes an
+ordinary Android smartphone as the primary computer for hobby vehicles.
+The first demonstrator is a cheap RC car. The software platform must be
+designed from the beginning to support a browser-based ground station,
+cellular connectivity, AI agents through MCP, and eventual physical
+vehicle integration.
+
+------------------------------------------------------------------------
+
+## 1. Foundational requirements
+
+1.  **No quadcopters in the initial project.** Begin with a simple
+    ground vehicle to avoid unnecessary control and mechanical
+    complexity.
+2.  **Minimize additional hardware and expense.** Use the phone's
+    existing processor, camera, IMU, GNSS, cellular modem, Wi-Fi,
+    storage, and battery wherever practical.
+3.  **Make the platform accessible and reusable.** Kids, adults, and
+    non-professional hobbyists should be able to repurpose old Android
+    phones for different vehicles.
+4.  **Retain vehicle hardware that is physically necessary.** Motors,
+    ESCs, motor drivers, receivers, servos, wiring, and power
+    electronics remain where needed. The phone should take over
+    computation and vehicle-control logic.
+5.  **Keep phone power independent from propulsion power.** Initially
+    use the phone's own battery. Do not assume the vehicle battery
+    should power the phone.
+6.  **Provide a browser-based ground station.** A web application should
+    send commands, display telemetry, configure vehicles, and support
+    development.
+7.  **Make the system measurable and tunable.** Capture data and support
+    vehicle-specific PID settings and other control laws. Develop and
+    validate configurations against the vehicle's behavior.
+8.  **Keep AI/MCP support foundational.** AI agents should be able to
+    understand vehicle capabilities, inspect status and telemetry, and
+    issue high-level commands through a standardized interface.
+
+### Core design principle
+
+**The smartphone is the primary vehicle computer, not an accessory or
+companion computer.** Add hardware only when the vehicle physically
+requires it or testing demonstrates that the phone cannot reliably
+perform a function.
+
+The system should work locally without AI, internet access, or a ground
+station. These are enhancements, not prerequisites for safe local
+control.
+
+------------------------------------------------------------------------
+
+## 2. Three main development phases
+
+The project is organized around three complete-system integration
+milestones. AI/MCP is included from Phase 1 and remains available in
+every phase.
+
+### Phase 1 --- Local linked system, simulation, and AI/MCP
+
+**Objective:** Build and test the complete software ecosystem locally,
+without buying or connecting a physical vehicle.
+
+Connect: - An Android phone running the vehicle-controller
+application. - A browser-based ground station. - A simulated RC car. -
+An AI agent connected through MCP. - A local communications layer.
+
+Build: - Android vehicle application and local vehicle-control
+service. - Vehicle abstraction and hardware-adapter interfaces. -
+Simulated RC car with steering, throttle, speed, position, and sensor
+feedback. - Browser ground station with manual controls, telemetry,
+configuration, and logs. - MCP server exposing standardized vehicle
+capabilities. - AI-agent workflow for interpreting natural-language
+requests and calling MCP tools. - PID and control-law configuration,
+with simulated testing. - Shared command and telemetry protocols.
+
+Example test: \> Ask an AI agent to drive the simulated car forward,
+turn, maintain a target speed, report its status, and stop.
+
+**Phase 1 tests and acceptance criteria:** - Phone and ground station
+communicate bidirectionally. - Manual browser commands control the
+simulated vehicle. - AI/MCP commands operate the same simulated
+vehicle. - Telemetry appears in both the ground station and
+AI-accessible tools. - Vehicle profiles and control settings can be
+changed and saved. - Commands are validated, bounded, sequenced, and
+logged. - Duplicate, stale, malformed, and out-of-range commands are
+rejected. - Connection loss and recovery are tested. - The phone can
+continue local control without the AI agent or browser. - The simulator
+and future physical hardware use the same vehicle interface.
+
+### Phase 2 --- 4G/5G connectivity and remote AI/MCP operation
+
+**Objective:** Move the complete linked system onto the internet and
+test remote operation over cellular networks before physical hardware is
+introduced.
+
+The Android phone connects through 4G/5G. A remote browser ground
+station and AI agent communicate with it through an authenticated
+backend.
+
+Test all three communication paths:
+
+1.  **AI agent → MCP → phone:** Mission and behavior commands.
+2.  **Ground station → phone:** Manual controls and configuration.
+3.  **Phone → ground station and AI:** Telemetry, status, and feedback.
+
+**Phase 2 tests and acceptance criteria:** - Remote browser-to-phone
+communication works over cellular data. - AI agents can issue MCP
+commands remotely. - Live telemetry is available remotely. - 4G and 5G
+behavior can be compared where available. - Measure command latency, AI
+inference time, phone execution time, and telemetry delay separately. -
+Measure jitter, packet loss, bandwidth, and reconnect time. - Test
+changing network quality and cellular handovers. - Test complete
+internet loss and recovery. - Reject stale or duplicated commands after
+reconnecting. - Confirm that local vehicle control does not depend on
+the remote AI, browser, or internet. - Enforce authentication,
+authorization, command limits, and session management.
+
+**Important architecture rule:** AI/MCP is supervisory, not a real-time
+motor-control loop. The phone executes local control loops. Network and
+AI delays must never be allowed to destabilize the vehicle.
+
+### Phase 3 --- Physical RC car integration
+
+**Objective:** Replace the simulated vehicle adapter with real car
+electronics while preserving the application, ground station, protocols,
+and AI/MCP interfaces.
+
+Start with an inexpensive, simple RC car. Prefer an existing car if
+available. Inspect its electronics before buying adapters or replacement
+parts.
+
+Integration tasks: - Identify the motor controller, steering mechanism,
+receiver, ESC or motor driver, and accessible signal interfaces. -
+Determine whether the existing controller can be reused or bypassed. -
+Connect the phone to the vehicle electronics through the simplest
+compatible wired interface. - Keep the phone independently powered. -
+Use the phone for vehicle computation, sensor processing, control logic,
+and telemetry. - Retain ESCs, motor drivers, servos, receivers, and
+other components that perform necessary electrical or mechanical
+functions. - Test local manual control, remote ground-station control,
+and AI/MCP commands. - Validate physical stop behavior,
+communication-loss behavior, and recovery.
+
+**Do not purchase a USB adapter or controller until the car's actual
+electrical interface is identified.** A USB-to-UART adapter only
+converts communication signals; it does not itself drive motors or
+generate servo outputs.
+
+------------------------------------------------------------------------
+
+## 3. System architecture
+
+``` text
+                         USER
+                           |
+                      AI AGENT
+                           |
+                          MCP
+                           |
+                  BROWSER GROUND STATION
+                           |
+                  Authenticated backend
+                           |
+                  Internet / Wi-Fi / 4G / 5G
+                           |
+                    ANDROID PHONE
+             +---------------------------+
+             | Vehicle application      |
+             | Vehicle profiles         |
+             | Mission logic             |
+             | Control laws / PID        |
+             | Sensor processing         |
+             | Command validation        |
+             | Telemetry and logging     |
+             +-------------+-------------+
+                           |
+                  Hardware abstraction
+                           |
+                    Vehicle adapter
+                       /       \
+                SIMULATOR    REAL CAR
+                 Phase 1–2    Phase 3
+```
+
+### Shared interface requirement
+
+The simulator and physical vehicle must implement the same hardware
+abstraction and vehicle-command interface. Phase 3 should replace the
+simulated adapter, not require a rewrite of the Android app, ground
+station, or MCP integration.
+
+### Keep three command paths distinct
+
+-   AI/MCP: high-level mission and behavior requests.
+-   Ground station: human manual control, configuration, and monitoring.
+-   Local phone controller: real-time control, validation, safety
+    limits, and hardware output.
+
+The phone remains responsible for local operation if remote connectivity
+disappears.
+
+------------------------------------------------------------------------
+
+## 4. Initial MCP capability interface
+
+Expose vehicle capabilities rather than exposing phone-specific or
+hardware-specific implementation details.
+
+Suggested initial tools:
+
+  MCP tool                  Purpose
+  ------------------------- -------------------------------------------
+  `vehicle.get_status`      Read vehicle state and connection status
+  `vehicle.get_telemetry`   Retrieve current and recent telemetry
+  `vehicle.set_throttle`    Request throttle within configured limits
+  `vehicle.set_steering`    Request steering within configured limits
+  `vehicle.stop`            Request a stop
+  `vehicle.set_mode`        Request a supported operating mode
+  `vehicle.configure_pid`   Submit control parameters for validation
+  `vehicle.run_mission`     Request an approved mission
+
+MCP commands should be authenticated, validated, bounded, logged, and
+subject to vehicle-state checks. The local controller---not the AI
+agent---decides whether a request is permitted.
+
+------------------------------------------------------------------------
+
+## 5. Ground station scope
+
+The browser-based ground station should provide:
+
+-   Vehicle selection and profiles.
+-   Manual throttle, steering, and stop controls.
+-   Connection and network status.
+-   Live telemetry and charts.
+-   Command and event logs.
+-   PID and control-law configuration.
+-   Mission and behavior requests.
+-   AI/MCP activity visibility.
+-   Simulation controls and fault injection.
+-   Exportable test data.
+
+The ground station should be usable locally and remotely.
+
+------------------------------------------------------------------------
+
+## 6. Simulation and stress testing
+
+Before physical hardware, use the simulated RC car to test the complete
+linked system.
+
+Simulate: - Motor response and acceleration. - Steering response and
+turning behavior. - Speed, position, and heading. - Sensor readings and
+noise. - Obstacles and collisions. - Delayed or missing commands. -
+Vehicle stopping and recovery.
+
+Inject faults: - 50--500 ms communication delays. - Random packet
+loss. - Complete network disconnection. - Phone CPU overload. - App
+suspension or restart. - Invalid, duplicated, stale, or out-of-range
+commands. - AI agent or MCP disconnection. - Ground-station
+disconnection.
+
+Record: - Command creation and receipt timestamps. - AI inference
+duration. - MCP request/response duration. - Phone command-processing
+duration. - Control-loop timing. - Telemetry frequency and delay. -
+Packet loss, jitter, and reconnection time. - Failsafe activation and
+recovery events.
+
+Simulation can validate software behavior and integration, but cannot
+prove real electrical compatibility, USB timing, motor response, radio
+behavior, or physical stability. Those require Phase 3 testing.
+
+------------------------------------------------------------------------
+
+## 7. First deliverable
+
+Build a **complete virtual RC car ecosystem**, not just an Android
+remote-control app.
+
+The first demonstrable system should include: 1. Android phone running
+the vehicle controller. 2. Simulated RC car using the same interface
+intended for real hardware. 3. Browser ground station with manual
+controls and telemetry. 4. MCP server connected to an AI agent. 5.
+AI-driven commands operating the simulated vehicle. 6. Logs and
+measurements for the entire command and telemetry path. 7. Local
+operation and safe behavior when AI or network connectivity is lost.
+
+After Phase 1, move the same system to 4G/5G for Phase 2. Only after
+remote operation and failure handling have been tested should the
+project move to physical RC car integration.
+
+------------------------------------------------------------------------
+
+## 8. Scope boundaries for the first prototype
+
+-   Ground RC car only; no quadcopters.
+-   No physical vehicle hardware during Phases 1 and 2.
+-   No assumption that every smartphone exposes GPIO or hardware timers.
+-   No unnecessary microcontroller or companion computer by default.
+-   No AI agent in the high-frequency control loop.
+-   No dependence on internet connectivity for local control.
+-   No purchase of adapters until the actual RC car interface is known.
+
+**Success means:** an ordinary Android phone can serve as the primary
+computer for a simulated RC car, be operated locally and remotely
+through a browser ground station, and accept high-level AI/MCP
+commands---with measurable performance and safe behavior under
+communication failures. The same software system can then be connected
+to an inexpensive physical RC car by replacing the simulator adapter.

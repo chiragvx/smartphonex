@@ -1,0 +1,219 @@
+{
+ "id": "hexapod",
+ "name": "Hexapod walker",
+ "class": "multi-legged",
+ "hazard": "light",
+ "actuators": [
+  {
+   "id": "l1_swing",
+   "unit": "deg",
+   "min": -45,
+   "max": 45,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "l1_lift",
+   "unit": "deg",
+   "min": -45,
+   "max": 45,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "l2_swing",
+   "unit": "deg",
+   "min": -45,
+   "max": 45,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "l2_lift",
+   "unit": "deg",
+   "min": -45,
+   "max": 45,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "l3_swing",
+   "unit": "deg",
+   "min": -45,
+   "max": 45,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "l3_lift",
+   "unit": "deg",
+   "min": -45,
+   "max": 45,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "r1_swing",
+   "unit": "deg",
+   "min": -45,
+   "max": 45,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "r1_lift",
+   "unit": "deg",
+   "min": -45,
+   "max": 45,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "r2_swing",
+   "unit": "deg",
+   "min": -45,
+   "max": 45,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "r2_lift",
+   "unit": "deg",
+   "min": -45,
+   "max": 45,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "r3_swing",
+   "unit": "deg",
+   "min": -45,
+   "max": 45,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "r3_lift",
+   "unit": "deg",
+   "min": -45,
+   "max": 45,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  }
+ ],
+ "skills": [
+  {
+   "id": "stand",
+   "type": "pose",
+   "params": {
+    "joints": {
+     "l1_swing": 0,
+     "l1_lift": 0,
+     "l2_swing": 0,
+     "l2_lift": 0,
+     "l3_swing": 0,
+     "l3_lift": 0,
+     "r1_swing": 0,
+     "r1_lift": 0,
+     "r2_swing": 0,
+     "r2_lift": 0,
+     "r3_swing": 0,
+     "r3_lift": 0
+    },
+    "ms": 1500
+   }
+  },
+  {
+   "id": "walk",
+   "type": "gait",
+   "params": {
+    "pattern": "hexapod_tripod",
+    "step_ms": 500,
+    "swing": 15,
+    "lift": 20,
+    "loops": 6,
+    "joints": {
+     "l1_swing": "l1_swing",
+     "l1_lift": "l1_lift",
+     "l2_swing": "l2_swing",
+     "l2_lift": "l2_lift",
+     "l3_swing": "l3_swing",
+     "l3_lift": "l3_lift",
+     "r1_swing": "r1_swing",
+     "r1_lift": "r1_lift",
+     "r2_swing": "r2_swing",
+     "r2_lift": "r2_lift",
+     "r3_swing": "r3_swing",
+     "r3_lift": "r3_lift"
+    }
+   }
+  }
+ ],
+ "safe_state": {
+  "on_link_loss": "stand"
+ },
+ "schema": "smartphonex.device/1",
+ "limits": {
+  "ai_autonomy": "supervised"
+ }
+}

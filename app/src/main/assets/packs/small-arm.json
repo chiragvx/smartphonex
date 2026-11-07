@@ -1,0 +1,115 @@
+{
+ "id": "small-arm",
+ "name": "Small robot arm",
+ "class": "arm",
+ "hazard": "light",
+ "actuators": [
+  {
+   "id": "base",
+   "unit": "deg",
+   "min": -90,
+   "max": 90,
+   "neutral": 0,
+   "max_rate": 45,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "shoulder",
+   "unit": "deg",
+   "min": -60,
+   "max": 60,
+   "neutral": 0,
+   "max_rate": 30,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "elbow",
+   "unit": "deg",
+   "min": -90,
+   "max": 90,
+   "neutral": 0,
+   "max_rate": 30,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "wrist",
+   "unit": "deg",
+   "min": -90,
+   "max": 90,
+   "neutral": 0,
+   "max_rate": 45,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "gripper",
+   "unit": "deg",
+   "min": 0,
+   "max": 60,
+   "neutral": 0,
+   "max_rate": 45,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  }
+ ],
+ "skills": [
+  {
+   "id": "home",
+   "type": "pose",
+   "params": {
+    "joints": {
+     "base": 0,
+     "shoulder": 0,
+     "elbow": 0,
+     "wrist": 0
+    },
+    "ms": 2000
+   }
+  },
+  {
+   "id": "open",
+   "type": "pose",
+   "params": {
+    "joints": {
+     "gripper": 60
+    },
+    "ms": 800
+   }
+  },
+  {
+   "id": "close",
+   "type": "pose",
+   "params": {
+    "joints": {
+     "gripper": 5
+    },
+    "ms": 800
+   }
+  }
+ ],
+ "safe_state": {
+  "on_link_loss": "hold"
+ },
+ "schema": "smartphonex.device/1",
+ "limits": {
+  "ai_autonomy": "supervised"
+ }
+}

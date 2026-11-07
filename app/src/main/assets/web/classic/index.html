@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SmartPhoneX Ground Station</title>
+<style>
+:root { --bg:#10141a; --panel:#1a2029; --line:#2d3644; --text:#e6ebf2; --muted:#93a0b2; --accent:#4aa3ff; --ok:#3ecf8e; --warn:#f5b342; --bad:#ff5c5c; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--text); font:14px/1.4 system-ui,sans-serif; }
+header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--line); position:sticky; top:0; z-index:2; }
+h1 { font-size:16px; margin:0 8px 0 0; }
+h2 { font-size:12px; margin:0 0 8px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
+.pill { padding:2px 10px; border-radius:99px; background:var(--line); font-weight:600; font-size:13px; }
+.pill.MANUAL,.pill.up { background:var(--ok); color:#06281a; }
+.pill.AUTO { background:var(--accent); color:#04213f; }
+.pill.FAILSAFE,.pill.down { background:var(--bad); color:#3a0505; }
+.muted { color:var(--muted); }
+main { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr)); gap:12px; padding:12px 16px; max-width:1500px; margin:auto; }
+section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; min-width:0; }
+canvas { display:block; width:100%; border-radius:6px; background:#0c1015; touch-action:none; }
+button,select,input { font:inherit; color:var(--text); background:#28313e; border:1px solid var(--line); border-radius:6px; padding:6px 10px; }
+button { cursor:pointer; } button:hover { border-color:var(--accent); }
+input,select { min-width:0; }
+.row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-bottom:8px; }
+#stop { width:100%; padding:14px; font-size:20px; font-weight:700; background:var(--bad); color:#fff; border:0; margin-bottom:8px; }
+.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(110px,1fr)); gap:6px; }
+.grid label { display:flex; flex-direction:column; font-size:12px; color:var(--muted); }
+.stat { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:6px; font-variant-numeric:tabular-nums; }
+.stat div { background:#12171e; border-radius:6px; padding:4px 8px; }
+.stat b { display:block; font-size:15px; }
+.stat span { font-size:11px; color:var(--muted); }
+#log { height:240px; overflow:auto; font:12px/1.4 ui-monospace,Consolas,monospace; background:#0c1015; border-radius:6px; padding:6px; }
+#log div { white-space:pre-wrap; overflow-wrap:anywhere; }
+#log .rejected,#log .failsafe,#log .collision { color:var(--bad); }
+#log .fault,#log .obstacle { color:var(--warn); }
+#log .mcp { color:var(--accent); }
+a { color:var(--accent); }
+.wide { grid-column:1/-1; }
+.mono { font:12px ui-monospace,Consolas,monospace; overflow-wrap:anywhere; color:var(--muted); }
+.scroll { overflow-x:auto; }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th { text-align:left; color:var(--muted); font-weight:500; padding:4px 6px; white-space:nowrap; }
+td { padding:4px 6px; border-top:1px solid var(--line); }
+td.vals { font-variant-numeric:tabular-nums; font-family:ui-monospace,Consolas,monospace; font-size:12px; min-width:180px; }
+td input[type=number] { width:68px; }
+td input[type=text] { width:120px; }
+.outrow { display:grid; grid-template-columns:minmax(90px,150px) 1fr 70px; gap:8px; align-items:center; margin-bottom:6px; font-variant-numeric:tabular-nums; }
+.bar { height:12px; background:#0c1015; border-radius:6px; position:relative; overflow:hidden; }
+.bar i { position:absolute; top:0; bottom:0; left:0; background:var(--accent); }
+.bar b { position:absolute; top:0; bottom:0; left:50%; width:1px; background:var(--muted); }
+#videoBox { display:flex; justify-content:center; background:#0c1015; border-radius:6px; overflow:hidden; }
+#video { max-width:100%; max-height:420px; display:block; }
+.fcgrid { display:grid; grid-template-columns:minmax(0,460px) minmax(0,1fr) minmax(0,1fr); gap:14px; }
+.fcgrid canvas { max-width:460px; }
+.kv { margin-bottom:10px; font-variant-numeric:tabular-nums; }
+.kv th { font-weight:500; }
+.kv td { border-top:1px solid var(--line); }
+.stale { opacity:.45; }
+.bad { color:var(--bad); }
+.pill { vertical-align:middle; }
+button.on { background:var(--accent); color:#04213f; border-color:var(--accent); }
+button:disabled { opacity:.45; cursor:not-allowed; }
+.lights { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
+.light { padding:3px 10px; border-radius:99px; background:var(--line); font-size:13px; }
+.light.ok { background:var(--ok); color:#06281a; }
+.light.bad { background:var(--bad); color:#3a0505; }
+.light.none { background:var(--line); color:var(--muted); }
+@media (max-width:1050px) { .fcgrid { grid-template-columns:minmax(0,1fr); } }
+#setupPending > div { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:10px; margin-bottom:6px; border:1px solid var(--warn); border-radius:6px; }
+#aiLog { max-height:360px; overflow:auto; background:#0c1015; border-radius:6px; padding:8px; margin-top:8px; min-height:60px; }
+#aiLog div { margin-bottom:8px; white-space:pre-wrap; overflow-wrap:anywhere; }
+#aiLog .user { color:var(--accent); }
+#aiLog .tool, #aiLog .system { color:var(--muted); font-size:12px; }
+#enrollQr svg { display:block; width:100%; max-width:260px; border-radius:6px; }
+#mcpCmd { width:100%; font:12px ui-monospace,Consolas,monospace; }
+#pair { position:fixed; inset:0; z-index:5; display:flex; align-items:center; justify-content:center; padding:16px; background:var(--bg); }
+#pair[hidden], [hidden] { display:none !important; }
+#pair form { width:100%; max-width:340px; text-align:center; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:24px; }
+#pairCode { width:100%; font-size:32px; text-align:center; letter-spacing:.2em; margin:12px 0; }
+#pairMsg { min-height:42px; margin:0; color:var(--muted); }
+@media (max-width:1050px) { main { grid-template-columns:minmax(0,1fr); padding:12px 16px; } }
+</style>
+</head>
+<body>
+<div id="pair" hidden>
+  <form id="pairForm">
+    <h1>Pair this browser</h1>
+    <input id="pairCode" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="000000" aria-label="Pairing code">
+    <p id="pairMsg" role="status"></p>
+    <button type="submit">Connect</button>
+  </form>
+</div>
+<header>
+  <h1>SmartPhoneX</h1>
+  <span id="mode" class="pill">--</span>
+  <span id="link" class="pill down">offline</span>
+  <span class="muted" id="rtt">RTT --</span>
+  <span class="muted" id="rate">telemetry --</span>
+  <span class="muted" id="age"></span>
+  <span class="muted" id="net"></span>
+  <span class="pill down" id="vehicleState" hidden>phone offline</span>
+  <span class="muted" id="reason"></span>
+  <form id="account" method="post" action="/logout" hidden style="margin-left:auto">
+    <span class="muted" id="who"></span> <button>Sign out</button>
+  </form>
+</header>
+<main>
+  <section class="wide" id="flightPanel">
+    <h2>Flight controller <span class="pill" id="fcMode">--</span> <span class="muted" id="fcAge"></span> <span class="pill down" id="fcStale" hidden>NO LIVE DATA</span></h2>
+    <div class="fcgrid">
+      <canvas id="horizon" width="460" height="320" aria-label="Artificial horizon showing the phone's attitude"></canvas>
+      <div>
+        <table class="kv">
+          <tr><th></th><th>Actual</th><th>Rate</th><th>Wanted</th></tr>
+          <tr><th>Roll</th><td id="attRoll">--</td><td id="rateRoll">--</td><td id="tgtRoll">--</td></tr>
+          <tr><th>Pitch</th><td id="attPitch">--</td><td id="ratePitch">--</td><td id="tgtPitch">--</td></tr>
+          <tr><th>Heading</th><td id="attYaw">--</td><td id="rateYaw">--</td><td id="tgtYaw">--</td></tr>
+        </table>
+        <table class="kv">
+          <tr><th>Android's attitude</th><td id="refVal">--</td></tr>
+          <tr><th>Difference from ours</th><td id="refDiff">--</td></tr>
+          <tr><th>Vibration</th><td id="vib">--</td></tr>
+          <tr><th>Altitude</th><td id="alt">--</td></tr>
+          <tr><th>Barometer</th><td id="baro">--</td></tr>
+        </table>
+      </div>
+      <div>
+        <div class="row" id="fmButtons">
+          <button data-fm="MANUAL">Manual</button>
+          <button data-fm="STABILIZE">Stabilize</button>
+          <button data-fm="HOLD_HEADING">Hold heading</button>
+          <button data-fm="RETURN_HOME">Return home</button>
+        </div>
+        <p class="muted" id="fmNote"></p>
+        <p id="armNote" role="status"></p>
+        <div class="row">
+          <button id="calGyro">Calibrate gyro</button>
+          <button id="setLevel">Set level</button>
+          <button id="setHome">Set home here</button>
+        </div>
+        <p class="muted">Calibrate and Set level with the phone still and level.</p>
+      </div>
+    </div>
+    <canvas id="fcChart" width="1400" height="170" style="margin-top:10px"></canvas>
+    <p class="mono" id="pidTerms"></p>
+  </section>
+  <section class="wide" id="healthPanel">
+    <h2>Health and timing</h2>
+    <div id="health" class="lights"></div>
+    <table class="kv wide-kv">
+      <tr><th>Gyro</th><td id="tGyro">--</td><th>Accelerometer</th><td id="tAccel">--</td><th>Compass</th><td id="tMag">--</td><th>GPS</th><td id="tGps">--</td></tr>
+      <tr><th>Control loop</th><td id="tLoop">--</td><th>Longest loop step</th><td id="tDt">--</td><th>Control task</th><td id="tTask">--</td><th>Overruns</th><td id="tOver">--</td></tr>
+      <tr><th>Sensor to output</th><td id="tDelay" colspan="7">--</td></tr>
+    </table>
+  </section>
+  <section class="wide" id="mapSection">
+    <h2>Map</h2>
+    <p class="muted" id="mapEmpty">No GPS position yet. Turn on Location under Sensors and go outside. Map images load only once there's a position, and those requests tell the map provider the area you're viewing.</p>
+    <div class="row">
+      <button id="mapSat" class="on">Satellite</button>
+      <button id="mapStreet">Streets</button>
+      <button id="mapIn" aria-label="Zoom in">+</button>
+      <button id="mapOut" aria-label="Zoom out">-</button>
+      <button id="mapFollowBtn">Follow</button>
+      <span class="muted" id="gpsInfo"></span>
+    </div>
+    <canvas id="liveMap" width="1400" height="560" hidden aria-label="Map showing the phone's GPS position and track"></canvas>
+    <p class="muted" id="mapCredit"></p>
+  </section>
+  <section class="wide" id="paramsBox">
+    <details>
+      <summary>Flight settings for this vehicle</summary>
+      <div class="scroll"><table id="params"></table></div>
+    </details>
+  </section>
+  <section id="arenaSection">
+    <h2>Simulator arena</h2>
+    <canvas id="map" width="600" height="600"></canvas>
+  </section>
+  <section>
+    <h2>Manual control</h2>
+    <button id="stop">STOP</button>
+    <div class="row">
+      <button id="armManual">Arm manual</button>
+      <button id="armAuto">Arm auto</button>
+      <button id="disarm">Disarm</button>
+    </div>
+    <canvas id="pad" width="300" height="220" aria-label="Drive pad: up and down is throttle, left and right is steering"></canvas>
+    <div id="pad2Box" hidden>
+      <p class="muted">Pitch and roll</p>
+      <canvas id="pad2" width="300" height="220" aria-label="Second pad: up and down is pitch, left and right is roll"></canvas>
+    </div>
+    <p class="muted">Drag the pad or hold W A S D<span id="arrowHint" hidden>, arrow keys for pitch and roll</span>. Space stops. Letting go returns to zero.</p>
+    <div id="missionBox">
+      <h2>Mission</h2>
+      <div class="row"><select id="mission"></select><button id="runMission">Run</button></div>
+    </div>
+    <h2>Telemetry</h2>
+    <div class="stat" id="stats"></div>
+  </section>
+  <section>
+    <h2>Vehicle and control law</h2>
+    <div class="row"><select id="profile"></select><button id="selectProfile">Select</button></div>
+    <div class="grid" id="fields"></div>
+    <div class="row" style="margin-top:8px"><button id="saveProfile">Save settings</button><span class="muted" id="saveState"></span></div>
+    <h2>Fault injection</h2>
+    <div class="grid">
+      <label>Delay (ms)<input id="fDelay" type="number" min="0" max="5000" step="50" value="0"></label>
+      <label>Packet loss (%)<input id="fLoss" type="number" min="0" max="100" step="5" value="0"></label>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="fApply">Apply</button>
+      <button data-fault="disconnect" data-value="5">Disconnect 5 s</button>
+      <button data-fault="stall" data-value="1000">Stall app 1 s</button>
+      <button data-fault="cpu" data-value="10">CPU load 10 s</button>
+      <button id="fMcp">Toggle MCP down</button>
+      <button data-fault="sim_reset" data-value="0">Reset sim</button>
+    </div>
+    <h2>Send bad commands</h2>
+    <div class="row">
+      <button data-bad="malformed">Malformed</button>
+      <button data-bad="duplicate">Duplicate</button>
+      <button data-bad="stale">Stale</button>
+      <button data-bad="range">Out of range</button>
+    </div>
+  </section>
+  <section class="wide">
+    <h2>Speed vs target, throttle, and loop time</h2>
+    <canvas id="chart" width="1400" height="220"></canvas>
+  </section>
+  <section class="wide" id="outputsSection">
+    <h2>Outputs <span class="muted" id="outputsNote"></span></h2>
+    <div id="outputs"></div>
+    <p class="mono" id="frame"></p>
+    <details id="channelsBox">
+      <summary>Edit outputs for this vehicle</summary>
+      <div class="scroll"><table id="channels"></table></div>
+      <div class="row" style="margin-top:8px">
+        <button id="addChannel">Add output</button>
+        <label class="muted">Serial format <select id="frameFormat"><option value="crsf">CRSF</option><option value="ibus">iBus</option></select></label>
+        <button id="saveChannels">Save outputs</button>
+        <span class="muted" id="channelsState"></span>
+      </div>
+      <p class="muted">Failsafe is held whenever disarmed or if the link is lost. Aircraft can't stop in the air: motor off and surfaces neutral means gliding down. Disarm before saving.</p>
+    </details>
+  </section>
+  <section class="wide" id="cameraSection">
+    <h2>Camera</h2>
+    <div class="row">
+      <label><input type="checkbox" id="camOn"> Camera on</label>
+      <select id="camId" aria-label="Camera"></select>
+      <select id="camSize" aria-label="Resolution"></select>
+      <label class="muted">Frames/s <select id="camFps"><option>1</option><option>2</option><option>5</option><option>10</option><option>15</option><option>30</option></select></label>
+      <label class="muted">Quality <select id="camQuality"><option value="30">Low</option><option value="50">Medium</option><option value="75">High</option></select></label>
+      <label class="muted">Priority <select id="camPriority"><option value="1">High</option><option value="2">Normal</option><option value="3">Low</option></select></label>
+      <span class="muted" id="camStatus"></span>
+    </div>
+    <div id="videoBox" hidden><img id="video" alt="Live camera"></div>
+    <p class="muted"><span id="videoStats"></span></p>
+    <label class="muted"><input type="checkbox" id="aiAccess"> Let AI agents read the camera and location</label>
+  </section>
+  <section class="wide" id="sensorsSection">
+    <h2>Sensors on this device</h2>
+    <div class="row">
+      <label class="muted">Data budget <select id="budget">
+        <option value="0">Unlimited</option><option value="2000">2 Mbps</option><option value="1000">1 Mbps</option>
+        <option value="500">500 kbps</option><option value="200">200 kbps</option><option value="50">50 kbps</option>
+      </select></label>
+      <span class="muted" id="dataRates"></span>
+    </div>
+    <div class="scroll"><table id="sensors"></table></div>
+    <p class="muted">When data runs short, low priority drops first. Commands are never dropped.</p>
+  </section>
+  <section class="wide" id="setupSection" hidden>
+    <h2>Device setup <span class="pill" id="setupStage">--</span> <span class="muted" id="setupDevice"></span></h2>
+    <div id="setupPending"></div>
+    <p class="muted" id="setupNote">Hardware stays closed until a person signs the device off. Until then, everything shows on the outputs preview.</p>
+    <div class="row" id="deviceSkills"></div>
+    <div class="row" id="deviceBehaviors"></div>
+    <div class="scroll"><table id="deviceJoints"></table></div>
+    <div class="row" style="margin-top:8px">
+      <label class="muted">Import a device (JSON pack or URDF) <input type="file" id="packFile" accept=".json,.urdf,.xml"></label>
+      <a id="packExport" download hidden>Export this device</a>
+      <span class="muted" id="packNote"></span>
+    </div>
+    <div class="row">
+      <label class="muted">Send telemetry to a MAVLink tool at <input id="mavHost" placeholder="192.168.1.20" aria-label="MAVLink address"></label>
+      <button id="mavSave">Save</button>
+    </div>
+  </section>
+  <section class="wide" id="assistantSection" hidden>
+    <details>
+      <summary>Setup assistant: bring your own LLM</summary>
+      <div class="row" style="margin-top:8px">
+        <select id="aiKind" aria-label="Provider"><option value="anthropic">Anthropic</option><option value="openai">OpenAI-compatible, or a local model</option></select>
+        <input id="aiBase" placeholder="Address" aria-label="Provider address" style="min-width:260px">
+        <input id="aiModel" placeholder="Model" aria-label="Model">
+        <input id="aiKey" type="password" autocomplete="off" placeholder="API key" aria-label="API key">
+        <button id="aiSave">Save</button>
+        <span class="muted" id="aiKeyNote"></span>
+      </div>
+      <p class="muted">The key is stored encrypted on the phone and is never sent back to a browser. Using it can cost money on your account.</p>
+      <div id="aiLog" role="log"></div>
+      <div class="row" style="margin-top:8px">
+        <input id="aiInput" placeholder="Describe your device..." aria-label="Message" style="flex:1;min-width:220px">
+        <button id="aiSend">Send</button>
+        <button id="aiReset">New conversation</button>
+      </div>
+    </details>
+  </section>
+  <section class="wide" id="enrollSection" hidden>
+    <h2>Connect a phone</h2>
+    <p class="muted">Show a QR code and scan it with the phone's camera. The phone then keeps connecting by itself. A new phone replaces the current one.</p>
+    <div class="row"><button id="enrollBtn">Show QR code</button></div>
+    <div id="enrollQr"></div>
+    <p id="enrollNote" role="status"></p>
+  </section>
+  <section class="wide" id="mcpSection">
+    <h2>Connect an AI agent</h2>
+    <p class="muted">Run this once in a terminal, then start a new Claude Code session. Click to select. It contains this vehicle's access key.</p>
+    <input id="mcpCmd" readonly aria-label="Command to connect an AI agent">
+  </section>
+  <section class="wide">
+    <h2>Commands, events and AI/MCP activity</h2>
+    <div class="row">
+      <a id="xTel" download>Telemetry CSV</a>
+      <a id="xCmd" download>Commands CSV</a>
+      <a id="xEvt" download>Events CSV</a>
+      <a id="xSen" download>Sensors CSV</a>
+      <a id="xFlt" download>Flight log CSV</a>
+      <label class="muted">Replay a flight log <input type="file" id="replayFile" accept=".csv"></label>
+      <button id="replayStop" hidden>Stop replay</button>
+      <input type="range" id="replaySlider" min="0" value="0" hidden aria-label="Replay position">
+      <span class="muted" id="replayInfo"></span>
+      <label class="muted"><input id="hideTel" type="checkbox" checked> newest first</label>
+    </div>
+    <div id="log"></div>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

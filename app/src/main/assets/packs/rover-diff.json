@@ -1,0 +1,102 @@
+{
+ "id": "rover-diff",
+ "name": "Two-wheel rover",
+ "class": "wheeled",
+ "hazard": "light",
+ "actuators": [
+  {
+   "id": "left_wheel",
+   "unit": "norm",
+   "min": -1,
+   "max": 1,
+   "neutral": 0,
+   "max_rate": 3,
+   "safe": {
+    "action": "neutral"
+   },
+   "mix": {
+    "forward": 1,
+    "turn": -1
+   },
+   "feedback": []
+  },
+  {
+   "id": "right_wheel",
+   "unit": "norm",
+   "min": -1,
+   "max": 1,
+   "neutral": 0,
+   "max_rate": 3,
+   "safe": {
+    "action": "neutral"
+   },
+   "mix": {
+    "forward": 1,
+    "turn": 1
+   },
+   "feedback": []
+  }
+ ],
+ "skills": [
+  {
+   "id": "creep",
+   "type": "set_inputs",
+   "params": {
+    "inputs": {
+     "forward": 0.2
+    },
+    "ms": 2000
+   }
+  },
+  {
+   "id": "spin",
+   "type": "set_inputs",
+   "params": {
+    "inputs": {
+     "turn": 0.3
+    },
+    "ms": 1000
+   }
+  }
+ ],
+ "behaviors": [
+  {
+   "id": "follow-line",
+   "tree": {
+    "node": "repeat",
+    "times": 1000,
+    "child": {
+     "node": "selector",
+     "children": [
+      {
+       "node": "sequence",
+       "children": [
+        {
+         "node": "condition",
+         "value": "sensor:vision.line:0",
+         "op": ">",
+         "compare": 0.5
+        },
+        {
+         "node": "skill",
+         "id": "creep"
+        }
+       ]
+      },
+      {
+       "node": "skill",
+       "id": "spin"
+      }
+     ]
+    }
+   }
+  }
+ ],
+ "safe_state": {
+  "on_link_loss": "stop"
+ },
+ "schema": "smartphonex.device/1",
+ "limits": {
+  "ai_autonomy": "supervised"
+ }
+}

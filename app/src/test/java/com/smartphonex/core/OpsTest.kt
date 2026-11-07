@@ -1,0 +1,421 @@
+package com.smartphonex.core
+
+import kotlinx.serialization.json.*
+import org.junit.After
+import org.junit.Assert.*
+import org.junit.Before
+import org.junit.Test
+import java.io.File
+import java.nio.file.Files
+
+private const val LAT = 28.6
+private const val LON = 77.2
+/** About 111 m north per 0.001 degrees. */
+private fun north(m: Double) = LAT + m / 111_195.0
+
+class GeoTest {
+    private val square = listOf(LAT - 0.001 to LON - 0.001, LAT - 0.001 to LON + 0.001, LAT + 0.001 to LON + 0.001, LAT + 0.001 to LON - 0.001)
+
+    @Test fun pointInPolygon() {
+        assertTrue(Geo.inside(LAT, LON, square))
+        assertFalse(Geo.inside(LAT + 0.002, LON, square))
+    }
+
+    @Test fun fenceAndKeepOutBreaches() {
+        val f = Fence(square, listOf(listOf(LAT - 0.0001 to LON - 0.0001, LAT - 0.0001 to LON + 0.0001, LAT + 0.0001 to LON)))
+        assertNotNull(Geo.breach(f, LAT + 0.002, LON, null, null))
+        assertEquals("inside keep-out area 1", Geo.breach(f, LAT, LON, null, null))
+        assertNull(Geo.breach(f, LAT + 0.0005, LON, null, null))
+    }
+
+    @Test fun missionValidationGivesSpecificReasons() {
+        val f = Fence(square)
+        val m = Mission("m", listOf(MissionItem(LAT, LON, triggers = listOf("nope")), MissionItem(LAT + 0.01, LON, radiusM = 0.0)))
+        val e = Geo.validate(m, f, null, setOf("photo"), 0.5)
+        assertTrue(e.toString(), e.any { "unknown trigger" in it })
+        assertTrue(e.toString(), e.any { "outside the fence" in it })
+        assertTrue(e.toString(), e.any { "arrival radius" in it })
+    }
+
+    @Test fun legsCrossingAKeepOutAreRefused() {
+        val f = Fence(keepOut = listOf(listOf(LAT - 0.0001 to LON - 0.0001, LAT - 0.0001 to LON + 0.0001, LAT + 0.0001 to LON + 0.0001, LAT + 0.0001 to LON - 0.0001)))
+        val m = Mission("m", listOf(MissionItem(LAT - 0.001, LON), MissionItem(LAT + 0.001, LON)))
+        assertTrue(Geo.validate(m, f, null, emptySet(), 1.0).any { it.startsWith("The leg") })
+    }
+
+    @Test fun badMissionsDontParse() {
+        assertNull(Geo.parseMission(buildJsonObject { putJsonArray("items") {} }).first)
+        val bad = buildJsonObject { putJsonArray("items") { addJsonObject { put("lat", 99.0); put("lon", 0.0) } } }
+        assertNull(Geo.parseMission(bad).first)
+        val rule = buildJsonObject { put("onLinkLoss", "explode"); putJsonArray("items") { addJsonObject { put("lat", 1.0); put("lon", 1.0) } } }
+        assertNull(Geo.parseMission(rule).first)
+    }
+
+    @Test fun missionSurvivesJson() {
+        val m = Mission("x", listOf(MissionItem(1.0, 2.0, 3.0, 0.2, 4.0, 6.0, listOf("photo"))), "home", "hold")
+        assertEquals(m, Geo.parseMission(Geo.missionJson(m)).first)
+    }
+}
+
+class MissionEngineTest {
+    private var now = 0L
+    private fun fix(lat: Double) = GpsFix(lat, LON, 0.0, 0.0, 0.0, 3.0, 10, now)
+
+    @Test fun followsPointsHoldsAndFinishes() {
+        val e = MissionEngine { now }
+        val arrived = ArrayList<Int>()
+        e.onArrive = { _, i -> arrived += i }
+        e.load(Mission("m", listOf(MissionItem(LAT, LON, holdS = 2.0), MissionItem(north(100.0), LON)), onEnd = "home"))
+        e.start()
+        assertTrue(e.step(fix(LAT)) is MissionEngine.Step.Hold)
+        assertEquals(listOf(0), arrived)
+        now = 2500
+        assertTrue(e.step(fix(LAT)) is MissionEngine.Step.GoTo)
+        assertEquals(1, e.index)
+        val end = e.step(fix(north(100.0)))
+        assertEquals(listOf(0, 1), arrived)
+        assertEquals("home", (end as MissionEngine.Step.End).action)
+        assertEquals(MissionEngine.State.DONE, e.state)
+    }
+
+    @Test fun holdsWithNoPositionPausedOrIdle() {
+        val e = MissionEngine { now }
+        e.load(Mission("m", listOf(MissionItem(north(50.0), LON))))
+        assertTrue(e.step(fix(LAT)) is MissionEngine.Step.Hold)
+        e.start()
+        assertTrue(e.step(null) is MissionEngine.Step.Hold)
+        assertTrue(e.step(fix(LAT)) is MissionEngine.Step.GoTo)
+        e.pause()
+        assertTrue(e.step(fix(LAT)) is MissionEngine.Step.Hold)
+        e.resume()
+        assertTrue(e.step(fix(LAT)) is MissionEngine.Step.GoTo)
+        e.abort()
+        assertEquals(MissionEngine.State.ABORTED, e.state)
+        assertTrue(e.step(fix(LAT)) is MissionEngine.Step.Hold)
+    }
+}
+
+class TrimAndTesterTest {
+    @Test fun trimReverseAndLimits() {
+        assertEquals(0.1, OutputTrim(trim = 0.1).apply(0.0), 1e-9)
+        assertEquals(-0.5, OutputTrim(reverse = true).apply(0.5), 1e-9)
+        assertEquals(0.6, OutputTrim(hi = 0.6).apply(1.0), 1e-9)
+        assertEquals(1.0, OutputTrim(trim = 0.3).apply(1.0), 1e-9)
+    }
+
+    @Test fun trimUndoAndPerVehicle() {
+        var v = "a"
+        val store = TrimStore(null, { v })
+        store.set("s", OutputTrim(trim = 0.1))
+        store.set("s", OutputTrim(trim = 0.2))
+        assertEquals(0.2, store.get("s").trim, 1e-9)
+        assertTrue(store.undo("s"))
+        assertEquals(0.1, store.get("s").trim, 1e-9)
+        v = "b"
+        assertEquals(0.0, store.get("s").trim, 1e-9)
+        assertFalse(store.undo("s"))
+    }
+
+    @Test fun holdToRunExpiresByItself() {
+        var now = 1000L
+        val t = OutputTester { now }
+        assertNull(t.hold(Source.LOCAL, "motor", 0.1))
+        assertEquals("motor", t.active()?.first)
+        assertNotNull("another screen can't take over a live test", t.hold(Source.GROUND, "motor", 0.1))
+        now += 1000
+        assertNull("released means stopped", t.active())
+        assertNull(t.hold(Source.GROUND, "motor", 0.1))
+    }
+}
+
+class TriggerCodecTest {
+    private fun t(body: JsonObjectBuilder.() -> Unit) = TriggerCodec.parse(buildJsonObject(body))
+
+    @Test fun refusesBadDefinitions() {
+        assertNotNull(t { put("id", "../x"); putJsonObject("action") { put("type", "marker") } }.second)
+        assertNotNull(t { put("id", "a"); putJsonObject("action") { put("type", "launch") } }.second)
+        assertNotNull(t { put("id", "a"); putJsonObject("action") { put("type", "pulse") } }.second)
+        assertNotNull(t { put("id", "a"); putJsonObject("action") { put("type", "pulse"); put("output", "x"); put("value", 2.0) } }.second)
+    }
+
+    @Test fun dangerousTriggersAreNeverAiOrAutomatic() {
+        val ok = t { put("id", "drop"); put("danger", true); put("aiAllowed", true); putJsonObject("action") { put("type", "pulse"); put("output", "x"); put("value", 1.0) } }.first
+        assertFalse(ok!!.aiAllowed)
+        assertNotNull(t { put("id", "drop"); put("danger", true); put("everySeconds", 5.0); putJsonObject("action") { put("type", "marker") } }.second)
+    }
+}
+
+/** The whole runtime with a fake phone: real controller, flight controller and Ops. */
+class OpsRuntimeTest {
+    private lateinit var dir: File
+    private lateinit var rt: VehicleRuntime
+    private var seq = 0L
+
+    @Before fun setUp() {
+        dir = Files.createTempDirectory("ops").toFile()
+        rt = VehicleRuntime(dir)
+    }
+
+    @After fun tearDown() { rt.ops.flush(); rt.stop(); dir.deleteRecursively() }
+
+    private fun cmd(c: Command, s: Source = Source.GROUND) = rt.controller.submit(Envelope(s, ++seq, null, c))
+    private fun ops(name: String, s: Source = Source.GROUND, body: JsonObjectBuilder.() -> Unit = {}) = cmd(Command.OpsRequest(name, buildJsonObject(body)), s)
+    private fun tick(n: Int = 1) = repeat(n) { rt.controller.tick(0.01) }
+    private var settled = false
+    private var ns = 0L
+    /** A phone lying still, so the autopilot has what navigation modes require. */
+    private fun settle() {
+        if (settled) return
+        settled = true
+        repeat(3000) { ns += 5_000_000L; rt.fc.onAccel(0f, 0f, 9.81f); rt.fc.onGyro(ns, 0f, 0f, 0f) }
+    }
+    private fun gps(lat: Double = LAT, lon: Double = LON) = settle().let { rt.fc.onGps(GpsFix(lat, lon, 200.0, 1.0, 0.0, 3.0, 10, System.currentTimeMillis()), null) }
+    private fun mission(vararg lat: Double) = buildJsonObject {
+        put("name", "walk"); putJsonArray("items") { lat.forEach { l -> addJsonObject { put("lat", l); put("lon", LON); put("radiusM", 3.0) } } }
+    }
+    private val mode get() = rt.controller.latest().mode
+
+    @Test fun manualArmsWithNoSensorsButNavigationDoesNot() {
+        assertEquals("gyro", rt.ops.readiness().first { it.id == "gyro" }.id)
+        assertNull(rt.ops.armProblem())
+        assertTrue(cmd(Command.SetMode(Mode.MANUAL)).accepted)
+        cmd(Command.Stop)
+        rt.fc.setModeForce(FlightMode.AUTO)
+        assertNotNull("no GPS or mission", rt.ops.armProblem())
+        assertFalse(cmd(Command.SetMode(Mode.MANUAL)).accepted)
+    }
+
+    @Test fun requiredChecklistBlocksArming() {
+        rt.params.set("ARM_REQ_CHECK", 1.0)
+        val r = cmd(Command.SetMode(Mode.MANUAL))
+        assertFalse(r.accepted)
+        assertTrue(r.message, "Checklist" in r.message)
+        rt.ops.checklistItems().forEach { i -> assertTrue(ops("checklist_set") { put("item", i); put("done", true) }.accepted) }
+        assertTrue(cmd(Command.SetMode(Mode.MANUAL)).accepted)
+    }
+
+    @Test fun killIsHumanOnlyAndOnlyClearedByArming() {
+        cmd(Command.SetMode(Mode.MANUAL))
+        assertFalse(cmd(Command.Kill, Source.AI).accepted)
+        assertTrue(cmd(Command.Kill).accepted)
+        assertEquals(Mode.FAILSAFE, mode)
+        assertTrue(rt.controller.killed)
+        tick()
+        assertTrue(rt.controller.latest().outputs.all { it.pulseUs == 0 })
+        assertFalse("AI can't rearm after a kill", cmd(Command.SetMode(Mode.AUTO), Source.AI).accepted)
+        assertTrue(cmd(Command.SetMode(Mode.MANUAL)).accepted)
+        assertFalse(rt.controller.killed)
+        tick()
+        assertTrue(rt.controller.latest().outputs.all { it.pulseUs > 0 })
+    }
+
+    @Test fun outputTestsOnlyWhileDisarmedWithLimitsAndConfirmation() {
+        val motor = rt.profiles.active.channels.first { it.kind != ChannelKind.SERVO }.name
+        val servo = rt.profiles.active.channels.first { it.kind == ChannelKind.SERVO }.name
+        assertEquals("needs_confirm", ops("test_output") { put("output", motor); put("value", 0.1) }.code)
+        assertEquals("out_of_range", ops("test_output") { put("output", motor); put("value", 0.9); put("confirmed", true) }.code)
+        assertTrue(ops("test_output") { put("output", motor); put("value", 0.1); put("confirmed", true) }.accepted)
+        tick()
+        assertEquals(0.1, rt.controller.latest().outputs.first { it.name == motor }.value, 1e-9)
+        assertTrue(ops("test_stop").accepted)
+        tick()
+        assertEquals(0.0, rt.controller.latest().outputs.first { it.name == motor }.value, 0.001)
+        assertEquals("out_of_range", ops("test_output") { put("output", "nope"); put("value", 0.1) }.code)
+        assertFalse("AI never runs output tests", ops("test_output", Source.AI) { put("output", servo); put("value", 0.1) }.accepted)
+        ops("test_output") { put("output", servo); put("value", 0.2) }
+        cmd(Command.SetMode(Mode.MANUAL))
+        assertNull("arming ends a test", rt.ops.tester.active())
+        assertEquals("not_permitted", ops("test_output") { put("output", servo); put("value", 0.2) }.code)
+    }
+
+    @Test fun trimLimitsWhileArmedAndForAi() {
+        val servo = rt.profiles.active.channels.first { it.kind == ChannelKind.SERVO }.name
+        assertEquals("out_of_range", ops("trim_set") { put("output", servo); put("trim", 0.5) }.code)
+        assertTrue(ops("trim_set") { put("output", servo); put("trim", 0.1) }.accepted)
+        tick()
+        assertEquals(0.1, rt.controller.latest().outputs.first { it.name == servo }.value, 1e-9)
+        assertFalse(ops("trim_set", Source.AI) { put("output", servo); put("trim", 0.0) }.accepted)
+        cmd(Command.SetMode(Mode.MANUAL))
+        assertEquals("while armed only small steps", "out_of_range", ops("trim_set") { put("output", servo); put("trim", 0.2) }.code)
+        assertTrue(ops("trim_set") { put("output", servo); put("trim", 0.115) }.accepted)
+        assertEquals("not_permitted", ops("trim_set") { put("output", servo); put("reverse", true) }.code)
+        assertTrue(ops("trim_undo") { put("output", servo) }.accepted)
+        assertEquals(0.1, rt.ops.trims.get(servo).trim, 1e-9)
+    }
+
+    @Test fun dangerousTriggerTakesTwoSteps() {
+        val servo = rt.profiles.active.channels.first { it.kind == ChannelKind.SERVO }.name
+        assertTrue(ops("trigger_save") {
+            putJsonObject("trigger") {
+                put("id", "drop"); put("label", "Release"); put("danger", true); put("armedOnly", true)
+                putJsonObject("action") { put("type", "pulse"); put("output", servo); put("value", 0.8); put("ms", 1000) }
+            }
+        }.accepted)
+        assertEquals("arm first", ops("trigger_fire") { put("id", "drop") }.message)
+        cmd(Command.SetMode(Mode.MANUAL))
+        assertTrue(ops("trigger_fire") { put("id", "drop") }.message, "two steps" in ops("trigger_fire") { put("id", "drop") }.message)
+        assertTrue(ops("trigger_prepare") { put("id", "drop") }.accepted)
+        assertTrue(ops("trigger_fire") { put("id", "drop") }.accepted)
+        assertNotNull(rt.ops.fire("drop", Source.AI, "test"))
+        tick()
+        assertEquals(0.8, rt.controller.latest().outputs.first { it.name == servo }.value, 1e-9)
+    }
+
+    @Test fun triggerCooldownAndCount() {
+        ops("trigger_save") { putJsonObject("trigger") { put("id", "m"); put("armedOnly", false); put("cooldownMs", 0); put("maxCount", 2); putJsonObject("action") { put("type", "marker") } } }
+        assertNull(rt.ops.fire("m", Source.GROUND, "t"))
+        assertNull(rt.ops.fire("m", Source.GROUND, "t"))
+        assertTrue(rt.ops.fire("m", Source.GROUND, "t")!!.contains("2 times"))
+        assertNotNull(rt.ops.fire("photo", Source.GROUND, "t").let { rt.ops.fire("photo", Source.GROUND, "t") })
+    }
+
+    @Test fun aMotorTriggerCantRunDisarmed() {
+        val motor = rt.profiles.active.channels.first { it.kind != ChannelKind.SERVO }.name
+        ops("trigger_save") { putJsonObject("trigger") { put("id", "spin"); put("armedOnly", false); putJsonObject("action") { put("type", "pulse"); put("output", motor); put("value", 0.2) } } }
+        assertTrue(rt.ops.fire("spin", Source.GROUND, "t")!!.contains("arm first"))
+    }
+
+    @Test fun missionRunsOnThePhoneAndFiresTriggersAtPoints() {
+        gps()
+        assertEquals("not_permitted", ops("mission_start").code)
+        val bad = ops("mission_upload") { put("mission", buildJsonObject { putJsonArray("items") { addJsonObject { put("lat", LAT); put("lon", LON); putJsonArray("triggers") { add("nope") } } } }) }
+        assertEquals("invalid", bad.code)
+        assertTrue(bad.message, "unknown trigger" in bad.message)
+        assertTrue(ops("mission_upload") {
+            put("mission", buildJsonObject {
+                put("name", "walk"); put("onEnd", "stop")
+                putJsonArray("items") {
+                    addJsonObject { put("lat", LAT); put("lon", LON); put("radiusM", 3.0); putJsonArray("triggers") { add("mark") } }
+                    addJsonObject { put("lat", north(50.0)); put("lon", LON); put("radiusM", 3.0) }
+                }
+            })
+        }.accepted)
+        val r = ops("mission_start")
+        assertTrue(r.message, r.accepted)
+        assertEquals(Mode.AUTO, mode)
+        assertEquals(FlightMode.AUTO, rt.fc.mode)
+        tick(2)
+        assertEquals(1, rt.ops.missions.index)
+        assertTrue(rt.log.allEvents().any { it.kind == "trigger" && it.code == "mark" })
+        assertTrue("drives toward the next point", rt.controller.latest().throttle > 0.0)
+        // Pause, resume.
+        assertTrue(ops("mission_pause").accepted)
+        tick(2)
+        assertEquals(0.0, rt.controller.latest().throttle, 0.001)
+        assertTrue(ops("mission_resume").accepted)
+        tick(2)
+        assertTrue(rt.controller.latest().throttle > 0.0)
+        // Arrive at the end.
+        gps(north(50.0))
+        tick(3)
+        assertEquals(MissionEngine.State.DONE, rt.ops.missions.state)
+        tick(3)
+        assertEquals("ended with stop", Mode.DISARMED, mode)
+        assertEquals(FlightMode.MANUAL, rt.fc.mode)
+    }
+
+    @Test fun stopEndsAMissionAndLeavesNormalArming() {
+        gps()
+        ops("mission_upload") { put("mission", mission(north(50.0))) }
+        assertTrue(ops("mission_start").accepted)
+        tick(2)
+        cmd(Command.Stop)
+        tick(2)
+        assertEquals(Mode.DISARMED, mode)
+        assertEquals(MissionEngine.State.ABORTED, rt.ops.missions.state)
+        assertEquals(FlightMode.MANUAL, rt.fc.mode)
+        assertEquals(0.0, rt.controller.latest().throttle, 0.001)
+        assertTrue(cmd(Command.SetMode(Mode.MANUAL)).accepted)
+    }
+
+    @Test fun aPersonOnTheSticksTakesOverAMission() {
+        gps()
+        ops("mission_upload") { put("mission", mission(north(50.0))) }
+        ops("mission_start")
+        tick(2)
+        assertTrue(cmd(Command.Drive(0.2, 0.0)).accepted)
+        assertEquals(Mode.MANUAL, mode)
+        assertEquals(FlightMode.MANUAL, rt.fc.mode)
+        assertEquals(MissionEngine.State.PAUSED, rt.ops.missions.state)
+    }
+
+    @Test fun fenceBreachHoldsAndFenceNeedsAPosition() {
+        assertTrue(ops("fence_set") { put("fence", buildJsonObject { put("maxDistM", 20.0); put("action", "hold") }) }.accepted)
+        val refused = cmd(Command.SetMode(Mode.MANUAL))
+        assertFalse(refused.accepted)
+        assertTrue(refused.message, "Geofence" in refused.message || "GPS" in refused.message)
+        gps()
+        assertTrue(rt.fc.setHomeHere() == null)
+        assertTrue(cmd(Command.SetMode(Mode.MANUAL)).accepted)
+        cmd(Command.Drive(0.1, 0.0))
+        rt.ops.tick(rt.controller.tick(0.01))
+        assertEquals(FlightMode.MANUAL, rt.fc.mode)
+        gps(north(50.0))
+        rt.ops.tick(rt.controller.tick(0.01))
+        assertEquals(FlightMode.HOLD, rt.fc.mode)
+        assertTrue(rt.log.allEvents().any { it.kind == "failsafe" && it.code == "fence" })
+    }
+
+    @Test fun linkLossAppliesTheMissionsRule() {
+        gps()
+        ops("mission_upload") { put("mission", buildJsonObject { put("onLinkLoss", "hold"); putJsonArray("items") { addJsonObject { put("lat", north(50.0)); put("lon", LON) } } }) }
+        ops("mission_start")
+        val t = rt.controller.tick(0.01)
+        rt.ops.tick(t)
+        assertEquals(FlightMode.AUTO, rt.fc.mode)
+        rt.ops.tick(t.copy(t = t.t + 5000))
+        assertEquals(FlightMode.HOLD, rt.fc.mode)
+        assertEquals(MissionEngine.State.PAUSED, rt.ops.missions.state)
+        assertEquals("the phone still holds it armed", Mode.AUTO, mode)
+    }
+
+    @Test fun simulatorRefusesGpsMissions() {
+        gps()
+        assertTrue(cmd(Command.SelectProfile("sim-buggy")).accepted)
+        val r = ops("goto") { put("lat", LAT); put("lon", LON) }
+        assertFalse(r.accepted)
+        assertEquals("unsupported", r.code)
+    }
+
+    @Test fun drillsReportAndLeaveItDisarmed() {
+        rt.start()
+        try {
+            val ms = rt.controller.stopDrill()
+            assertNotNull(ms)
+            assertEquals(Mode.DISARMED, mode)
+            val (took, text) = rt.controller.failsafeDrill()
+            assertNotNull(text, took)
+            assertEquals(Mode.DISARMED, mode)
+        } finally { rt.stop() }
+    }
+
+    @Test fun autoDisarmsWhenIdleButNotOnAPlane() {
+        val params = rt.params
+        params.set("AUTO_DISARM", 1.0)
+        cmd(Command.SetMode(Mode.MANUAL))
+        val start = rt.controller.latest().t
+        while (rt.controller.latest().t - start < 300) { rt.controller.tick(0.01); cmd(Command.Drive(0.0, 0.0)); Thread.sleep(10) }
+        assertEquals(Mode.MANUAL, mode)
+        while (rt.controller.latest().t - start < 1200) { rt.controller.tick(0.01); cmd(Command.Drive(0.0, 0.0)); Thread.sleep(10) }
+        assertEquals("zero sticks count as idle", Mode.DISARMED, mode)
+    }
+
+    @Test fun reportsAndFilesCantEscapeTheirFolders() {
+        File(dir, "logs").mkdirs()
+        File(dir, "logs/flight-1.csv").writeText("t,mode\n1,MANUAL\n")
+        File(dir, "secret.csv").writeText("nope")
+        assertNotNull(rt.ops.readFile("log", "flight-1.csv"))
+        assertNull(rt.ops.readFile("log", "../secret.csv"))
+        assertNull(rt.ops.readFile("log", "..\\secret.csv"))
+        assertNull(rt.ops.readFile("nope", "flight-1.csv"))
+        assertNull(rt.ops.readFrame("..", 0))
+        assertEquals(1, rt.ops.filesJson()["logs"]!!.jsonArray.size)
+    }
+
+    @Test fun capabilitiesFollowTheDevice() {
+        assertTrue(rt.ops.capsJson()["map"]!!.jsonPrimitive.boolean)
+        val status = rt.ops.opsJson(false)
+        assertFalse("viewers don't get the fence's shape", status["fence"]!!.jsonObject.containsKey("data"))
+        assertTrue(rt.ops.opsJson(true)["fence"]!!.jsonObject.containsKey("data"))
+    }
+}

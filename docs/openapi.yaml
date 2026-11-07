@@ -1,0 +1,61 @@
+openapi: 3.0.3
+info:
+  title: SmartPhoneX device tools
+  version: "1"
+  description: >
+    The same tools as MCP, for anything that can't use MCP. List them first: their input schemas
+    come from the running phone, so they always match its version. A person must approve some
+    setup steps in the ground station or on the phone, and no tool can do that.
+paths:
+  /api/tools:
+    get:
+      summary: List tools with their input schemas
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: Array of tools
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name: { type: string }
+                    description: { type: string }
+                    inputSchema: { type: object }
+        "401": { description: Bad key }
+        "503": { description: The vehicle is offline (relay only) }
+  /api/tools/{name}:
+    post:
+      summary: Call a tool
+      security: [{ bearer: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, description: The tool's arguments }
+      responses:
+        "200":
+          description: Result. isError is true when the phone refused, with the reason in the text.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  isError: { type: boolean }
+                  content:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        type: { type: string }
+                        text: { type: string }
+        "401": { description: Bad key }
+        "404": { description: Unknown tool }
+        "429": { description: Too many requests (relay only) }
+        "503": { description: The vehicle is offline (relay only) }
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer }

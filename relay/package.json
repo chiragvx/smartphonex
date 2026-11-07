@@ -1,0 +1,17 @@
+{
+  "name": "smartphonex-relay",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/relay.test.mjs"
+  },
+  "dependencies": {
+    "qrcode": "1.5.4",
+    "ws": "8.18.3"
+  }
+}

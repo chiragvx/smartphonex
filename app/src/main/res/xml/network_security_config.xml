@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+Android can't scope plain HTTP to private address ranges, and local model servers rarely have HTTPS.
+So plain HTTP is allowed here, and the app's own checks decide: RelayClient only allows it for local
+testing addresses, and Assistant only for private network addresses. Secrets never cross the internet in clear.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

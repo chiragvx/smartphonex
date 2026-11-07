@@ -1,0 +1,107 @@
+{
+ "id": "pan-tilt",
+ "name": "Pan-tilt camera mount",
+ "class": "fixed",
+ "hazard": "toy",
+ "actuators": [
+  {
+   "id": "pan",
+   "unit": "deg",
+   "min": -90,
+   "max": 90,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {
+    "turn": 1
+   },
+   "feedback": []
+  },
+  {
+   "id": "tilt",
+   "unit": "deg",
+   "min": -30,
+   "max": 45,
+   "neutral": 0,
+   "max_rate": 60,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {
+    "pitch": 1
+   },
+   "feedback": []
+  }
+ ],
+ "skills": [
+  {
+   "id": "home",
+   "type": "pose",
+   "params": {
+    "joints": {
+     "pan": 0,
+     "tilt": 0
+    },
+    "ms": 1000
+   }
+  },
+  {
+   "id": "scan",
+   "type": "sequence",
+   "params": {
+    "steps": [
+     {
+      "joints": {
+       "pan": -60
+      },
+      "ms": 2000
+     },
+     {
+      "joints": {
+       "pan": 60
+      },
+      "ms": 4000
+     },
+     {
+      "joints": {
+       "pan": 0
+      },
+      "ms": 2000
+     }
+    ],
+    "loops": 2
+   }
+  }
+ ],
+ "behaviors": [
+  {
+   "id": "watch",
+   "tree": {
+    "node": "repeat",
+    "times": 100,
+    "child": {
+     "node": "sequence",
+     "children": [
+      {
+       "node": "skill",
+       "id": "scan"
+      },
+      {
+       "node": "wait",
+       "ms": 5000
+      }
+     ]
+    }
+   }
+  }
+ ],
+ "safe_state": {
+  "on_link_loss": "home"
+ },
+ "limits": {
+  "ai_autonomy": "unattended"
+ },
+ "schema": "smartphonex.device/1"
+}

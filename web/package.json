@@ -1,0 +1,17 @@
+{
+  "name": "smartphonex-ground-station",
+  "private": true,
+  "version": "0.6.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "dev": "vite"
+  },
+  "dependencies": {
+    "preact": "10.25.4"
+  },
+  "devDependencies": {
+    "typescript": "5.7.3",
+    "vite": "6.0.11"
+  }
+}

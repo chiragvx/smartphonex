@@ -1,0 +1,12 @@
+.gradle/
+.tooling/
+build/
+local.properties
+.idea/
+*.iml
+relay/node_modules/
+relay/data/
+results/
+dist/
+web/node_modules/
+.kotlin/

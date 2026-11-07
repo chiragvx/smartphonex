@@ -1,0 +1,256 @@
+{
+ "id": "biped-12",
+ "name": "Small biped, 12 joints",
+ "class": "biped",
+ "hazard": "light",
+ "actuators": [
+  {
+   "id": "l_hip_yaw",
+   "unit": "deg",
+   "min": -20,
+   "max": 20,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "l_hip_roll",
+   "unit": "deg",
+   "min": -25,
+   "max": 25,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "l_hip_pitch",
+   "unit": "deg",
+   "min": -60,
+   "max": 60,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "l_knee",
+   "unit": "deg",
+   "min": 0,
+   "max": 90,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "l_ankle_pitch",
+   "unit": "deg",
+   "min": -40,
+   "max": 40,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "l_ankle_roll",
+   "unit": "deg",
+   "min": -25,
+   "max": 25,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "r_hip_yaw",
+   "unit": "deg",
+   "min": -20,
+   "max": 20,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "r_hip_roll",
+   "unit": "deg",
+   "min": -25,
+   "max": 25,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "r_hip_pitch",
+   "unit": "deg",
+   "min": -60,
+   "max": 60,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "r_knee",
+   "unit": "deg",
+   "min": 0,
+   "max": 90,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "r_ankle_pitch",
+   "unit": "deg",
+   "min": -40,
+   "max": 40,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  },
+  {
+   "id": "r_ankle_roll",
+   "unit": "deg",
+   "min": -25,
+   "max": 25,
+   "neutral": 0,
+   "max_rate": 90,
+   "safe": {
+    "action": "hold"
+   },
+   "mix": {},
+   "feedback": []
+  }
+ ],
+ "controllers": [
+  {
+   "id": "fall",
+   "type": "fall_detect",
+   "gains": {
+    "limit": 45
+   }
+  },
+  {
+   "id": "balance",
+   "type": "balance",
+   "gains": {
+    "limit": 8
+   },
+   "params": {
+    "pitch": {
+     "l_ankle_pitch": -0.4,
+     "r_ankle_pitch": -0.4
+    },
+    "roll": {
+     "l_ankle_roll": -0.4,
+     "r_ankle_roll": -0.4
+    }
+   }
+  }
+ ],
+ "skills": [
+  {
+   "id": "stand",
+   "type": "pose",
+   "params": {
+    "joints": {
+     "l_hip_yaw": 0,
+     "l_hip_roll": 0,
+     "l_hip_pitch": 0,
+     "l_knee": 0,
+     "l_ankle_pitch": 0,
+     "l_ankle_roll": 0,
+     "r_hip_yaw": 0,
+     "r_hip_roll": 0,
+     "r_hip_pitch": 0,
+     "r_knee": 0,
+     "r_ankle_pitch": 0,
+     "r_ankle_roll": 0
+    },
+    "ms": 1500
+   }
+  },
+  {
+   "id": "sit",
+   "type": "pose",
+   "params": {
+    "joints": {
+     "l_hip_pitch": 45,
+     "r_hip_pitch": 45,
+     "l_knee": 85,
+     "r_knee": 85,
+     "l_ankle_pitch": -40,
+     "r_ankle_pitch": -40
+    },
+    "ms": 2500
+   }
+  },
+  {
+   "id": "walk",
+   "type": "gait",
+   "params": {
+    "pattern": "biped_static",
+    "step_ms": 800,
+    "swing": 12,
+    "lift": 25,
+    "shift": 8,
+    "loops": 4,
+    "joints": {
+     "left_hip": "l_hip_pitch",
+     "right_hip": "r_hip_pitch",
+     "left_knee": "l_knee",
+     "right_knee": "r_knee",
+     "left_ankle_roll": "l_ankle_roll",
+     "right_ankle_roll": "r_ankle_roll"
+    }
+   }
+  }
+ ],
+ "safe_state": {
+  "on_link_loss": "sit",
+  "on_fall": "hold"
+ },
+ "schema": "smartphonex.device/1",
+ "limits": {
+  "ai_autonomy": "supervised"
+ }
+}
