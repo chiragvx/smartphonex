@@ -448,7 +448,7 @@ class VehicleController(
         log.event(if (drillRunning) "test" else "failsafe", "controller", "activated", reason)
     }
 
-    /** Drive measured speed to zero, then release the output so the car doesn't creep. */
+    /** Armed only: drive measured speed to zero, then release the output so the car doesn't creep. */
     private fun brake(speed: Double, p: VehicleProfile): Double =
         if (abs(speed) < 0.05) 0.0 else (-speed).coerceIn(-p.maxThrottle, p.maxThrottle)
 
@@ -475,7 +475,8 @@ class VehicleController(
         var throttle: Double
 
         when (mode) {
-            Mode.DISARMED, Mode.FAILSAFE -> throttle = brake(speed, p)
+            // Never drive a motor from a speed estimate while disarmed: one bad reading would kick it backwards.
+            Mode.DISARMED, Mode.FAILSAFE -> throttle = 0.0
             Mode.MANUAL -> { throttle = manualThrottle; steering = manualSteering; pitch = manualPitch; roll = manualRoll }
             Mode.AUTO -> {
                 advanceMission(now)
@@ -510,7 +511,8 @@ class VehicleController(
         val axes = if (fcActive) fc!!.process(requested, armed, dtSec).let {
             it.copy(throttle = it.throttle.coerceIn(-p.maxThrottle, p.maxThrottle), steering = it.steering.coerceIn(-p.maxSteering, p.maxSteering))
         } else { fc?.bypass(); requested }
-        val safe = !armed && abs(speed) < 0.05
+        // Disarmed outputs sit at their failsafe values whatever any sensor says.
+        val safe = !armed
         val o = ops()
         val channels = shape(Mixer.mix(p.channels, axes, safe), p, safe, o)
         val out = axes.copy(channels = channels, safe = safe, failsafe = mode == Mode.FAILSAFE, killed = killed)

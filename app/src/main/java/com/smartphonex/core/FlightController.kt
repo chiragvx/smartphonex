@@ -207,6 +207,7 @@ class FlightController(
             is GpsGuard.Verdict.Rejected -> if (fix.atMs - lastRejectLogMs > 5000) { lastRejectLogMs = fix.atMs; log.event("gps", "phone", "rejected", "GPS fix ignored: ${v.reason}") }
             else -> {}
         }
+        if (isPlane()) countFlyingFix(fix)
     }
 
     /** The guarded position: smoothed, with jumps removed, and how far to trust it. */
@@ -227,34 +228,61 @@ class FlightController(
     private var armedAtMs = 0L
     private var lastPropKq = p("PROP_KQ")
     /**
-     * Tones heard in the minute before arming, with every output at rest: not the propeller (mains hum, fans,
-     * machinery), so skipped once armed. A motor spun on the Test page must never land here, or the real propeller
-     * would be skipped in flight at that speed.
+     * Background: tones heard for [PROP_STEADY_MS] with every output at rest, within a few percent of one pitch,
+     * such as mains hum or a laptop fan hunting for speed, whatever their frequency. The analyzer skips them, armed or not, and they're forgotten a minute after
+     * they stop. A motor spun on the Test page never lands here, or the real propeller would be skipped in flight.
      */
-    private class Heard(val hz: Double, var atMs: Long)
+    private class Heard(var hz: Double, val firstMs: Long, var atMs: Long, var hits: Int = 0)
     private val propBackground = ArrayDeque<Heard>()
+    /** Tones heard with every output at rest, which become background if they stay at one pitch long enough. */
+    private val propSteady = ArrayList<Heard>()
     /** When every output last came to rest, or 0 while one is being driven. */
     private var propQuietSinceMs = 0L
+    /** The tracked tone over the last few seconds, to tell a propeller changing speed from a steady hum. */
+    private val propRecent = ArrayDeque<Pair<Long, Double>>()
+    private fun samePitch(a: Double, b: Double) = abs(a - b) <= a * PropTone.EXCLUDE_WIDTH + 2.0
 
-    /** Background tones for the analyzer to skip, only while armed: disarmed, everything heard is reported. */
-    fun propExclusions(): List<Double> = synchronized(lock) { if (lastArmed) propBackground.map { it.hz } else emptyList() }
+    /** Background tones for the analyzer to skip. */
+    fun propExclusions(): List<Double> = synchronized(lock) { propBackground.map { it.hz } }
     /** Why the microphone isn't listening, set by the app, or null when it is. */
     @Volatile var propUnavailable: String? = null
 
-    /** A tone from the microphone, or null when nothing stood out. Called about ten times a second. */
-    fun onPropTone(tone: PropTone.Tone?, outputsAtRest: Boolean = true) = synchronized(lock) {
+    /**
+     * A tone from the microphone, or null when nothing stood out. Called about ten times a second. [heard] is every
+     * strong peak in the sound, background included, so background that's still humming stays remembered.
+     */
+    fun onPropTone(tone: PropTone.Tone?, outputsAtRest: Boolean = true, heard: List<Double> = tone?.peaks ?: emptyList()) = synchronized(lock) {
         val now = nowMs()
         val hz = propTracker.update(tone, now)
+        if (hz != null) propRecent.addLast(now to hz)
+        while (propRecent.isNotEmpty() && now - propRecent.first().first > PROP_STEADY_MS) propRecent.removeFirst()
+        val propVarying = propRecent.size > 1 && propRecent.maxOf { it.second } > propRecent.minOf { it.second } * 1.05
         if (tone != null) { propTone = tone; propAtMs = now }
         if (!outputsAtRest) propQuietSinceMs = 0L else if (propQuietSinceMs == 0L) propQuietSinceMs = now
+        // Background still humming stays remembered, and follows a slow drift.
+        for (f in heard) propBackground.firstOrNull { samePitch(it.hz, f) }?.let { it.atMs = now; it.hz += 0.1 * (f - it.hz) }
         if (!lastArmed) {
             propBackground.removeAll { now - it.atMs > PROP_BACKGROUND_MS }
+            propSteady.removeAll { now - it.atMs > PROP_STEADY_GAP_MS }
             // A motor takes a moment to spin down after a test, so wait before trusting the quiet.
-            if (tone != null && propQuietSinceMs > 0 && now - propQuietSinceMs >= PROP_SPINDOWN_MS) {
-                val same = propBackground.firstOrNull { abs(it.hz - tone.hz) <= it.hz * 0.03 }
-                if (same != null) same.atMs = now else {
-                    propBackground.addLast(Heard(tone.hz, now))
-                    while (propBackground.size > 6) propBackground.removeFirst()
+            val quiet = propQuietSinceMs > 0 && now - propQuietSinceMs >= PROP_SPINDOWN_MS
+            if (!quiet) propSteady.clear() else {
+                val hit = HashSet<Heard>()
+                // Tones of a tracked tone that's changing speed (a propeller tested on the bench) are never background.
+                // A hum or fan holds its pitch, so it's still learned even though it's tracked.
+                val rev = if (hz != null && propVarying) tone?.revHz else null
+                fun isProp(f: Double) = rev != null && Math.round(f / rev).let { k -> k in 1..PropTone.MAX_HARMONIC && abs(f - k * rev) <= f * 0.01 + 2.0 }
+                for (f in heard) {
+                    if (isProp(f) || propBackground.any { samePitch(it.hz, f) }) continue
+                    val c = propSteady.firstOrNull { samePitch(it.hz, f) }
+                    if (c == null) { if (propSteady.size < 64) propSteady += Heard(f, now, now); continue }
+                    if (hit.add(c)) { c.hits++; c.atMs = now; c.hz += 0.1 * (f - c.hz) }
+                }
+                // Heard a quarter of the time or more for the whole stretch: a weak fan flickers at the threshold.
+                propSteady.filter { now - it.firstMs >= PROP_STEADY_MS && it.hits >= PROP_STEADY_MS / 400 }.forEach { c ->
+                    propSteady.remove(c)
+                    propBackground.addLast(Heard(c.hz, now, now))
+                    while (propBackground.size > PROP_BACKGROUND_MAX) propBackground.removeFirst()
                 }
             }
         }
@@ -263,6 +291,8 @@ class FlightController(
         if (kq == 0.0 && lastPropKq > 0.0) { propAir.clear(); log.event("prop", "phone", "forgot", "propeller airspeed forgotten") }
         lastPropKq = kq
         if (hz == null || p("MIC_PROP") < 2 || !lastArmed) return@synchronized
+        // Learn only from a clean tone: not distorted, not mixed with another propeller, well above the noise.
+        if (tone == null || tone.clipped || tone.otherFamily || tone.snrDb < p("MIC_SNR") + 6) return@synchronized
         // Learn only from a fresh, trusted satellite fix, so GPS jumps don't teach it wrong.
         val g = gps ?: return@synchronized
         if (now - g.atMs > 1500 || gpsGuard.estimate(now)?.health != GpsGuard.Health.GOOD) return@synchronized
@@ -421,19 +451,48 @@ class FlightController(
 
     /**
      * Why a plane looks airborne, or null. Disarming then is refused: it would cut the motor and drop the controls.
-     * STOP still works, as the deliberate kill switch. Ground vehicles never count as flying. Without a fresh fix it
-     * can't tell, so it doesn't refuse.
+     * STOP still works, as the deliberate kill switch. Ground vehicles never count as flying. It takes two airborne
+     * fixes in a row to say yes, and three seconds without any sign to say no again. Without a fresh fix it can't tell,
+     * so once those seconds pass it doesn't refuse.
      */
-    fun flyingReason(): String? = synchronized(lock) {
-        if (!isPlane()) return null
-        // Airspeed doesn't drop to zero in a headwind the way ground speed can.
-        propAirspeed(nowMs())?.let { if (it > p("DISARM_AIR_SPD")) return "airspeed about ${"%.0f".format(it)} m/s, from the propeller" }
-        val g = gps ?: return null
-        if (nowMs() - g.atMs > p("GPS_TIMEOUT_S") * 1000) return null
-        if (g.speedMps > p("DISARM_AIR_SPD")) return "moving at ${"%.0f".format(g.speedMps)} m/s"
+    fun flyingReason(): String? = synchronized(lock) { updateFlying(nowMs()); flyingWhy }
+
+    // One bad reading must not flip "flying" either way. Setting it needs two fixes in a row (or a second of propeller
+    // airspeed); clearing it needs every sign gone for a few seconds, so a dip in ground speed in a headwind doesn't.
+    private var gpsFlyFixes = 0
+    private var gpsFlyWhy: String? = null
+    private var propFlySinceMs = 0L
+    private var flyingWhy: String? = null
+    private var lastFlyingMs = 0L
+
+    /** Counts fixes in a row that look airborne. Called for every fix, after the guard has seen it. */
+    private fun countFlyingFix(g: GpsFix) {
+        val e = gpsGuard.estimate(g.atMs)?.takeIf { it.health != GpsGuard.Health.LOST && it.health != GpsGuard.Health.NONE }
+        // The higher of the fix's own speed and the guard's smoothed one: missing a real flight is the worse mistake.
+        val speed = maxOf(g.speedMps, e?.speedMps ?: 0.0)
         val h = home
-        if (h != null && g.altM - h.altM > DISARM_AIR_ALT_M) return "${(g.altM - h.altM).toInt()} m above home"
-        null
+        val why = when {
+            speed > p("DISARM_AIR_SPD") -> "moving at ${"%.0f".format(speed)} m/s"
+            h != null && g.altM - h.altM > DISARM_AIR_ALT_M -> "${(g.altM - h.altM).toInt()} m above home"
+            else -> null
+        }
+        if (why != null) { gpsFlyFixes++; gpsFlyWhy = why } else { gpsFlyFixes = 0; gpsFlyWhy = null }
+    }
+
+    private fun updateFlying(now: Long) {
+        if (!isPlane()) { flyingWhy = null; propFlySinceMs = 0L; return }
+        // Airspeed doesn't drop to zero in a headwind the way ground speed can.
+        val air = propAirspeed(now)
+        if (air != null && air > p("DISARM_AIR_SPD")) { if (propFlySinceMs == 0L) propFlySinceMs = now } else propFlySinceMs = 0L
+        val g = gps
+        val gpsFresh = g != null && now - g.atMs <= p("GPS_TIMEOUT_S") * 1000
+        val why = when {
+            propFlySinceMs > 0 && now - propFlySinceMs >= FLY_CONFIRM_MS -> "airspeed about ${"%.0f".format(air)} m/s, from the propeller"
+            gpsFresh && gpsFlyFixes >= 2 -> gpsFlyWhy
+            else -> null
+        }
+        if (why != null) { flyingWhy = why; lastFlyingMs = now }
+        else if (flyingWhy != null && now - lastFlyingMs >= FLY_RELEASE_MS) flyingWhy = null
     }
 
     fun armProblem(): String? = synchronized(lock) {
@@ -476,6 +535,7 @@ class FlightController(
         if (armed && !lastArmed) { armedAtMs = now; propBackground.removeAll { now - it.atMs > PROP_BACKGROUND_MS } }
         lastArmed = armed
         monitor(now, armed)
+        updateFlying(now)
         val out = when (mode) {
             FlightMode.MANUAL -> { clearTargets(); input }
             FlightMode.STABILIZE -> if (isPlane()) planeStabilize(input, dt) else groundRate(input, input.throttle, -input.steering * p("RATE_MAX"), dt)
@@ -756,12 +816,22 @@ class FlightController(
                 val hz = propHz(now)
                 put("status", propUnavailable ?: when {
                     hz == null -> "listening, no propeller tone"
-                    !lastArmed -> "disarmed: steady tones heard with the motor still count as background, ignored once armed"
+                    !lastArmed -> "disarmed: tones heard steadily for 10 s with the motor still are taken as background and ignored"
                     else -> "hearing the propeller"
                 })
                 put("hz", hz?.let { r1(it) })
                 put("rpm", hz?.let { Math.round(it / p("PROP_BLADES") * 60) })
-                put("snr", propTone?.takeIf { now - propAtMs < 1000 }?.let { r1(it.snrDb) })
+                val t = propTone?.takeIf { now - propAtMs < 1000 }
+                put("snr", t?.let { r1(it.snrDb) })
+                put("harmonics", t?.harmonics?.joinToString(","))
+                put("background", propBackground.joinToString(",") { "%.0f".format(it.hz) }.ifEmpty { null })
+                // Problems with what's heard, for the operator: each makes the reading less trustworthy.
+                put("warning", when {
+                    propUnavailable != null -> "microphone lost"
+                    t?.clipped == true -> "too loud: the microphone is distorting. Mount the phone further from the propeller"
+                    t?.otherFamily == true -> "another propeller or engine is audible"
+                    else -> null
+                })
                 if (p("MIC_PROP") >= 2) {
                     put("air", propAirspeed(now)?.let { r1(it) })
                     put("learned", p("PROP_KQ") > 0)
@@ -832,8 +902,14 @@ class FlightController(
         private const val STALL_MS = 50.0
         /** Phone GPS height wanders by 10 m or more, so only clearly above home counts as flying. */
         private const val DISARM_AIR_ALT_M = 15.0
+        private const val FLY_CONFIRM_MS = 1_000L
+        private const val FLY_RELEASE_MS = 3_000L
         private const val PROP_BACKGROUND_MS = 60_000L
         private const val PROP_SPINDOWN_MS = 3_000L
+        private const val PROP_BACKGROUND_MAX = 32
+        /** How long a tone must hold one pitch, motor still, to count as background. */
+        private const val PROP_STEADY_MS = 10_000L
+        private const val PROP_STEADY_GAP_MS = 3_000L
     }
 }
 

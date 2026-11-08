@@ -73,7 +73,7 @@ class PropListener(private val context: Context, private val rt: VehicleRuntime)
                 if (any) { silentSince = 0L; if (rt.fc.propUnavailable != null) rt.fc.propUnavailable = null }
                 else if (silentSince == 0L) silentSince = now
                 else if (now - silentSince > 2000) rt.fc.propUnavailable = "Android is giving silence: open SmartPhoneX on the phone once so it may use the microphone"
-                rt.fc.onPropTone(analyzer.analyze(ring, rt.params.get("MIC_F_MIN"), rt.params.get("MIC_F_MAX"), rt.params.get("MIC_SNR"), rt.fc.propExclusions()), outputsAtRest = rt.ops.tester.active() == null)
+                rt.fc.onPropTone(analyzer.analyze(ring, rt.params.get("MIC_F_MIN"), rt.params.get("MIC_F_MAX"), rt.params.get("MIC_SNR"), rt.fc.propExclusions(), rt.params.get("PROP_BLADES").toInt()), outputsAtRest = rt.ops.tester.active() == null, heard = analyzer.lastPeaks)
             }
         } finally {
             runCatching { rec.stop() }

@@ -10,10 +10,10 @@ Checked in the code, 2026-11-08:
 | Path | Uses speed? | Risk today |
 |---|---|---|
 | AUTO speed control (`VehicleController`) | Only if the vehicle reports a measured speed. On real hardware none does, so it uses a fixed throttle per target speed, with no feedback | None. It appears as soon as a speed sensor is connected |
-| Braking when disarmed or in failsafe (`brake()`) | Reverse throttle in proportion to measured speed, up to the throttle limit | **A spike would kick a disarmed vehicle backwards.** Not reachable on real hardware yet |
+| Braking when disarmed or in failsafe | No longer. **Fixed 2026-11-09:** disarmed and failsafe give zero throttle, and every output sits at its failsafe value whatever any sensor says. Braking from speed is only used while armed in AUTO | None while disarmed. Armed braking gets layers 3–4 |
 | Obstacle stop distance | Faster means stop sooner | A spike makes it stop early. Safe direction |
 | Plane Return home and Hold | Fixed `RTH_THROTTLE`, no speed | None |
-| Plane disarm check (`flyingReason`) | One raw GPS speed reading | A spike refuses Disarm for a moment. STOP still works |
+| Plane disarm check (`flyingReason`) | **Fixed 2026-11-09:** two airborne fixes in a row (the higher of Doppler and the guard's smoothed speed), or 1 s of propeller airspeed. It stays "flying" until every sign has been gone for 3 s | A single spike can't refuse Disarm, and a headwind dip can't allow it |
 | GPS guard | Its own speed estimate, from gated positions | Reach check only, no throttle |
 
 So the plan is mostly about what we build next: speed hold, the fusion filter, and automatic plane throttle. Steps 1
@@ -86,8 +86,8 @@ Whatever the estimate says:
 
 ## 4. Order of work
 
-1. **Fix `brake()`:** disarmed and failsafe never drive a motor from a speed estimate. Small.
-2. **Persistence on `flyingReason`:** smoothed speed, condition held for 1 s. Small.
+1. **Fix `brake()`:** disarmed and failsafe never drive a motor from a speed estimate. **Done.**
+2. **Persistence on `flyingReason`:** smoothed speed, condition held for 1 s. **Done** (two fixes in a row, released after 3 s).
 3. **`SpeedEstimate` with layer 1:** checks, acceleration band, stuck detection, sign. Every controller reads only from it.
 4. **Layer 3 in the speed PID:** bounded correction, slew, integrator rules. This must land before any real speed
    source is wired to the PID.
@@ -122,19 +122,36 @@ No extra parts. Off unless `MIC_PROP` is set. It never sets throttle.
 ### What's built
 
 - **Hearing** (`MIC_PROP` 1):
-  - The microphone picks out the blade-pass tone: revolutions per second × `PROP_BLADES`. It's found by scoring each
-    frequency together with its 2nd and 3rd harmonics.
-  - A jump of over 15% is believed only once it repeats for 3 frames.
-  - Tones heard while disarmed count as background, and are skipped once armed.
+  - It finds every strong peak, then the **revolution rate** that explains them as one family of whole multiples:
+    blade tones, the motor's own tone (often 7×), imbalance. So a loud motor tone, or a blade tone the microphone barely
+    hears, can't be taken for the blade tone. Blade-pass = revolutions × `PROP_BLADES`.
+  - A family must have a propeller's shape: blade harmonics including the 1st or 2nd, and at most one other series.
+    Scattered room noise doesn't, unless it's very strong.
+  - Locking on, or a jump of over 15%, is believed only once it repeats for 3 frames.
+  - **Background:** a tone heard steadily for 10 s with every output still, within ±4% (a fan hunting for speed), is
+    skipped from then on, armed or not, and forgotten a minute after it stops. Tones of a tracked tone that's changing
+    speed are never learned, so a propeller tested on the bench isn't.
+  - Clipping, a second propeller and a lost microphone are flagged on Operate. Airspeed learning skips them.
   - Sound is analyzed in memory and never stored.
 - **Airspeed** (`MIC_PROP` 2):
   - `airspeed = k0 + k1·n + k2·(u/n) + k3·(u/n)·minutes`, from balancing motor and propeller torque.
   - Learned with the wind from trusted GPS, after flying all 8 directions.
   - Kept only within `PROP_FIT_RMS`. Used on Operate and in the in-flight disarm check only.
-- **Tested:**
-  - unit tests;
-  - a synthetic 6,000 rpm tone played through the phone's own speaker, heard as 5,998–6,004 rpm (11 of 11).
-- **That bench test is the easy case.** The speaker sits next to the microphone, and the sound was a clean tone.
+- **Tested on the phone, 2026-11-09** (`tools/prop-sweep.py` and `tools/prop-sweep.mjs`): a 50 s sound with holds from
+  3,000 to 12,000 rpm, jumps both ways, a throttle-cut ramp and a punch-out ramp, played through the phone's own
+  speaker beside a running laptop fan whose speed it wasn't told:
+
+  | | Result |
+  |---|---|
+  | 9 held speeds | Every one 0.0% median error, 0.1% worst, SNR 25–45 dB |
+  | 3,000 rpm | Right, from the 4th, 6th and 7th harmonics: the speaker can't play its 100 Hz blade tone |
+  | Lock-on after a jump | 0.30–0.41 s (frame-exact, unit test); 0.2–0.8 s on the phone, which reports twice a second |
+  | Ramps of 833 and 1,750 rpm/s | 0.19 s behind, then 0.1% off |
+  | Sound stops | Noticed within 1.3 s |
+  | The fan | Learned as background by itself (150 Hz); 25 s of room alone gave no false readings |
+
+- **Still the easy case.** The sound is synthetic, from a speaker next to the microphone. A real motor and propeller is
+  the stage 2 gate.
 
 ### Flaws found
 
@@ -178,13 +195,15 @@ Ranked by how badly each could mislead. "Bug" means the code as written is wrong
 
 Each stage has to pass before the next starts.
 
-1. **Fix H1.** Done: background is learned only after every output has been at rest for 3 s, and only from the
-   minute before arming. Covered by a unit test.
+1. **Fix H1.** Done: background is learned only with every output at rest, and never from a tone that's changing
+   speed. Covered by unit tests.
 2. **Hear the right thing, and prove it on a real motor** (`MIC_PROP` 1):
-   - Common-fundamental (revolution frequency) search, instead of assuming the blade tone (H2, H3, H6).
-   - Clipping detection (H4).
-   - Signal-to-noise in logs (H5).
-   - An unmissable notice when the microphone is lost (H7).
+   - Common-fundamental (revolution frequency) search, instead of assuming the blade tone (H2, H3, H6). **Built.**
+   - Clipping detection (H4). **Built.**
+   - Signal-to-noise in the live stats, and no learning below `MIC_SNR` + 6 dB (H5). **Built.**
+   - A notice in the Arm panel when the microphone is lost, distorting, or hears another propeller (H7). **Built.**
+   - Left of H3: with only the blade tones heard, and the fundamental too faint to hear, the reading can still be
+     double. A real motor's own tone usually settles it; the ground run in stage 3 will catch the rest.
    - **Check against a real rpm, with no extra parts:** a 240 fps slow-motion video from a second phone shows the
      blades. Count frames per revolution.
    - **Gate:** within 2% at 5 throttle steps, on 2 different motors.

@@ -91,6 +91,7 @@ function ArmPanel() {
           ? <SlideToArm label={S.tel?.mode === 'FAILSAFE' ? 'Slide to clear and arm' : 'Slide to arm'} onDone={() => cmd('set_mode', { mode: 'MANUAL' }, { label: 'Arm' })} />
           : fails.map(c => <CheckRow key={c.id} c={c} />)}
       {ops?.readiness.filter(c => c.status === 'warn').map(c => <CheckRow key={c.id} c={c} />)}
+      {S.fcs?.prop?.warning && <CheckRow c={{ label: 'Propeller sensor', status: 'warn', detail: S.fcs.prop.warning, fix: 'Its airspeed and rpm readings are not trusted until this clears.' }} />}
       <details>
         <summary>Kill</summary>
         <p class="dim">Cuts every output at once, with no glide or slow-down.</p>
@@ -247,6 +248,7 @@ function Stats() {
   const prop = S.fcs?.prop;
   if (prop) {
     rows.push(['Propeller (mic)', prop.rpm != null ? `${prop.rpm} rpm` : prop.status]);
+    if (prop.warning) rows.push(['Propeller warning', prop.warning]);
     if (prop.learned !== undefined) rows.push(['Airspeed (prop)', prop.air != null ? `~${prop.air.toFixed(1)} m/s`
       : prop.learned ? 'out of learned range' : `learning: ${prop.sectors}/8 directions`]);
     if (prop.wind != null) rows.push(['Wind (prop)', `${prop.wind.toFixed(0)} m/s from ${prop.windFrom}°`]);

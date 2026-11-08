@@ -51,16 +51,31 @@ class FlightControllerTest {
     private fun step(input: ActuatorOutput, armed: Boolean = true): ActuatorOutput { nowMs += 10; nowNs += 10_000_000L; return fc.process(input, armed, 0.01) }
 
     @Test fun aPlaneMovingFastCountsAsFlyingButAStillOneDoesNot() {
-        fun gps(speed: Double) = fc.onGps(GpsFix(18.53, 73.91, 560.0, speed, 90.0, 4.0, 10, nowMs), 0.0)
+        fun gps(speed: Double) { nowMs += 1000; fc.onGps(GpsFix(18.53, 73.91, 560.0, speed, 90.0, 4.0, 10, nowMs), 0.0) }
         gps(0.3)
         assertNull("parked", fc.flyingReason())
-        gps(12.0)
+        gps(12.0); gps(12.0)
         assertTrue(fc.flyingReason()!!.contains("12 m/s"))
         nowMs += 10_000
         assertNull("no fresh fix: can't tell, so it doesn't refuse", fc.flyingReason())
         type = "car"
-        gps(12.0)
+        gps(12.0); gps(12.0)
         assertNull("only planes", fc.flyingReason())
+    }
+
+    @Test fun oneBadFixDoesNotFlipFlying() {
+        fun gps(speed: Double) { nowMs += 1000; fc.onGps(GpsFix(18.53, 73.91, 560.0, speed, 90.0, 4.0, 10, nowMs), 0.0); fc.flyingReason() }
+        repeat(6) { gps(0.2) }
+        gps(40.0)
+        assertNull("a single spike doesn't refuse Disarm", fc.flyingReason())
+        gps(0.2)
+        assertNull(fc.flyingReason())
+        gps(14.0); gps(14.0)
+        assertNotNull("two airborne fixes in a row", fc.flyingReason())
+        gps(1.0) // Ground speed dips flying into a headwind.
+        assertNotNull("a dip doesn't let it disarm", fc.flyingReason())
+        gps(1.0); gps(1.0); gps(1.0)
+        assertNull("landed: three seconds with no sign", fc.flyingReason())
     }
 
     @Test fun aMotorSpunOnTheTestPageIsNeverLearnedAsBackground() {
@@ -69,7 +84,7 @@ class FlightControllerTest {
             fc.onPropTone(PropTone.Tone(hz, 20.0, -20.0), outputsAtRest = atRest)
         }
         fun arm() = fc.process(ActuatorOutput(0.0, 0.0), true, 0.01)
-        hear(50.0, 5, atRest = true) // Mains hum, motor still.
+        hear(50.0, 14, atRest = true) // Mains hum, motor still, long enough to count as background.
         hear(200.0, 5, atRest = false) // The propeller, spun from the Test page.
         hear(200.0, 2, atRest = true) // Still spinning down after the test.
         arm()
@@ -77,6 +92,25 @@ class FlightControllerTest {
         fc.process(ActuatorOutput(0.0, 0.0), false, 0.01)
         nowMs += 120_000 // Old background is forgotten by the next arming.
         arm()
+        assertTrue(fc.propExclusions().isEmpty())
+    }
+
+    @Test fun aSteadyFanBecomesBackgroundButAChangingToneDoesNot() {
+        // A laptop fan at a pitch nobody told it, and a propeller test sound stepping speed every 4 s.
+        fun hear(seconds: Int, vararg hz: Double) = repeat(seconds * 10) {
+            nowMs += 100
+            fc.onPropTone(hz.lastOrNull()?.let { PropTone.Tone(it, 20.0, -20.0, peaks = hz.toList()) })
+        }
+        hear(4, 137.0, 200.0); hear(4, 137.0, 260.0); hear(4, 137.0, 320.0); hear(3, 137.0, 380.0)
+        assertEquals("the fan held its pitch; the steps never did", listOf(137.0), fc.propExclusions())
+        // A propeller tested on the bench, disarmed, changing speed: its tones keep coming back, but they're never background.
+        repeat(200) { i ->
+            nowMs += 100
+            val rev = if ((i / 30) % 2 == 0) 100.0 else 120.0
+            fc.onPropTone(PropTone.Tone(2 * rev, 30.0, -20.0, revHz = rev, harmonics = listOf(2, 4, 7), peaks = listOf(137.0, 2 * rev, 4 * rev, 7 * rev)))
+        }
+        assertEquals(listOf(137.0), fc.propExclusions())
+        hear(70) // The fan is switched off; a minute later it's forgotten.
         assertTrue(fc.propExclusions().isEmpty())
     }
 

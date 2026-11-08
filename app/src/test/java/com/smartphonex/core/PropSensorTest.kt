@@ -3,6 +3,7 @@ package com.smartphonex.core
 import org.junit.Assert.*
 import org.junit.Test
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
@@ -41,7 +42,57 @@ class PropSensorTest {
         val hum = prop(50.0, noise = 0.0, second = 0.8)
         val mixed = prop(200.0, noise = 0.1).mapIndexed { i, s -> s * 0.5 + hum[i] }.toDoubleArray()
         assertEquals("without exclusions the hum wins", 50.0, pt.analyze(mixed, 40.0, 1500.0, 12.0)!!.hz, 1.5)
-        assertEquals(200.0, pt.analyze(mixed, 40.0, 1500.0, 12.0, exclude = listOf(50.0))!!.hz, 1.5)
+        // What the app stores as background: every peak the hum makes, heard while disarmed.
+        val background = pt.analyze(hum, 40.0, 1500.0, 12.0)!!.peaks
+        assertEquals(200.0, pt.analyze(mixed, 40.0, 1500.0, 12.0, exclude = background)!!.hz, 1.5)
+    }
+
+    private fun tone(hz: Double, amp: Double, phase: Double = 0.0) = DoubleArray(8192) { i -> amp * sin(2 * PI * hz * i / rate + phase) }
+    private fun sum(vararg parts: DoubleArray) = DoubleArray(8192) { i -> parts.sumOf { it[i] } + 0.05 * rnd.nextDouble(-1.0, 1.0) }
+
+    @Test fun `a motor tone louder than the blades isn't taken for them`() {
+        // 3,000 rpm, two blades: blade tone 100 Hz and harmonics. A 14-pole motor hums at 7 × 50 = 350 Hz, louder.
+        val s = sum(tone(100.0, 0.2), tone(200.0, 0.12, 1.0), tone(300.0, 0.05, 2.0), tone(350.0, 0.4), tone(700.0, 0.15, 0.5))
+        val t = PropTone(rate).analyze(s, 40.0, 1500.0, 12.0)!!
+        assertEquals("blade tone", 100.0, t.hz, 1.0)
+        assertEquals("revolutions", 50.0, t.revHz, 0.5)
+        assertTrue("the motor tone is one of its harmonics: ${t.harmonics}", 7 in t.harmonics)
+        assertFalse(t.otherFamily)
+    }
+
+    @Test fun `a blade tone faded by the microphone's weak low end isn't read as double`() {
+        // 2,400 rpm: blade tone 80 Hz, nearly lost below the microphone's range, with its 2nd and 3rd harmonics clear.
+        val s = sum(tone(80.0, 0.02), tone(160.0, 0.3, 1.0), tone(240.0, 0.2, 2.0))
+        assertEquals(80.0, PropTone(rate).analyze(s, 40.0, 1500.0, 12.0)!!.hz, 1.0)
+    }
+
+    @Test fun `a slight imbalance gives the revolution rate directly`() {
+        val s = sum(tone(60.0, 0.03), tone(120.0, 0.3, 1.0), tone(240.0, 0.15, 2.0), tone(360.0, 0.05))
+        assertEquals(120.0, PropTone(rate).analyze(s, 40.0, 1500.0, 12.0)!!.hz, 1.0)
+    }
+
+    @Test fun `an overloaded microphone is flagged but still heard`() {
+        val loud = sum(tone(150.0, 2.0), tone(300.0, 0.8)).map { it.coerceIn(-1.0, 1.0) }.toDoubleArray()
+        val t = PropTone(rate).analyze(loud, 40.0, 1500.0, 12.0)!!
+        assertTrue(t.clipped)
+        assertEquals(150.0, t.hz, 1.0)
+        assertFalse(PropTone(rate).analyze(prop(150.0), 40.0, 1500.0, 12.0)!!.clipped)
+    }
+
+    @Test fun `a lone weak tone just over the threshold isn't a propeller`() {
+        val pt = PropTone(rate)
+        // A faint whine like a laptop fan: one peak, no family.
+        val whine = DoubleArray(8192) { i -> 0.004 * sin(2 * PI * 1066.0 * i / rate) + 0.05 * rnd.nextDouble(-1.0, 1.0) }
+        assertNull(pt.analyze(whine, 40.0, 1500.0, 12.0))
+        assertTrue("but it's still heard, so it can be learned as background", pt.lastPeaks.any { abs(it - 1066.0) < 3 })
+        // A strong lone tone still counts.
+        assertNotNull(pt.analyze(tone(300.0, 0.3), 40.0, 1500.0, 12.0))
+    }
+
+    @Test fun `a second propeller nearby is reported`() {
+        val s = sum(tone(200.0, 0.3), tone(400.0, 0.15), tone(263.0, 0.3), tone(526.0, 0.15))
+        assertTrue(PropTone(rate).analyze(s, 40.0, 1500.0, 12.0)!!.otherFamily)
+        assertFalse(PropTone(rate).analyze(sum(tone(200.0, 0.3), tone(400.0, 0.15)), 40.0, 1500.0, 12.0)!!.otherFamily)
     }
 
     @Test fun `noise alone is no tone`() {
@@ -51,16 +102,87 @@ class PropSensorTest {
         assertNull("silence", pt.analyze(DoubleArray(8192), 40.0, 1500.0, 12.0))
     }
 
-    @Test fun `a one-frame jump is ignored, a lasting change is believed`() {
+    @Test fun `a one-frame jump or ghost is ignored, a lasting tone is believed`() {
         val tr = ToneTracker()
         fun t(hz: Double) = PropTone.Tone(hz, 20.0, -20.0)
-        tr.update(t(200.0), 0)
-        tr.update(t(205.0), 100)
-        assertEquals(202.5, tr.update(t(400.0), 200)!!, 0.1)
-        assertEquals(202.5, tr.update(t(201.0), 300)!!, 2.0)
-        tr.update(t(300.0), 400); tr.update(t(301.0), 500)
-        assertEquals(302.0, tr.update(t(302.0), 600)!!, 0.1)
+        assertNull("one reading isn't enough to lock on", tr.update(t(200.0), 0))
+        assertNull(tr.update(t(1066.0), 50)) // A ghost in between starts over.
+        tr.update(t(200.0), 100); tr.update(t(201.0), 200)
+        assertEquals(202.0, tr.update(t(202.0), 300)!!, 0.1)
+        assertEquals(202.0, tr.update(t(400.0), 400)!!, 0.1)
+        assertEquals(201.5, tr.update(t(201.0), 500)!!, 0.1)
+        tr.update(t(300.0), 600); tr.update(t(301.0), 700)
+        assertEquals(302.0, tr.update(t(302.0), 800)!!, 0.1)
         assertNull("stale", tr.update(null, 3000))
+    }
+
+    /**
+     * The schedule in tools/prop-sweep.py, through the analyzer and tracker exactly as the phone runs them (a new
+     * analysis every 4096 samples over the last 8192), with a laptop-fan-like whine on top the whole time. Prints how
+     * fast it locks on after each jump, so the numbers can be compared with the phone's.
+     */
+    @Test fun `follows holds, jumps and ramps through a fan's whine`() {
+        val segs = listOf(Triple(3, 0, 0), Triple(4, 3000, 3000), Triple(4, 4500, 4500), Triple(4, 6000, 6000), Triple(4, 7500, 7500),
+            Triple(4, 9000, 9000), Triple(4, 12000, 12000), Triple(4, 5000, 5000), Triple(4, 8000, 8000), Triple(6, 8000, 3000),
+            Triple(4, 3000, 10000), Triple(2, 10000, 10000), Triple(3, 0, 0))
+        val n = segs.sumOf { it.first } * rate
+        val truth = DoubleArray(n)
+        val audio = DoubleArray(n)
+        var phase = 0.0
+        var i = 0
+        for ((secs, a, b) in segs) for (j in 0 until secs * rate) {
+            val rpm = a + (b - a) * j.toDouble() / (secs * rate)
+            truth[i] = rpm
+            phase += rpm / 60 / rate
+            val p = 2 * PI * phase
+            val fan = 0.01 * sin(2 * PI * 1066.0 * i / rate) + 0.006 * sin(2 * PI * 145.0 * i / rate)
+            audio[i] = fan + 0.02 * rnd.nextDouble(-1.0, 1.0) + if (rpm > 0)
+                0.2 * sin(2 * p) + 0.12 * sin(4 * p + 1) + 0.05 * sin(6 * p + 2) + 0.06 * sin(7 * p + 0.5) else 0.0
+            i++
+        }
+        val pt = PropTone(rate)
+        val tr = ToneTracker()
+        val hop = 4096
+        val out = ArrayList<Pair<Double, Double?>>() // (seconds, rpm heard)
+        var end = 8192
+        while (end <= n) {
+            val ms = (end * 1000L) / rate
+            val hz = tr.update(pt.analyze(audio.copyOfRange(end - 8192, end), 40.0, 1500.0, 12.0, exclude = listOf(1066.0, 145.0)), ms)
+            out += end.toDouble() / rate to hz?.let { it / 2 * 60 }
+            end += hop
+        }
+        fun truthAt(t: Double) = truth[(t * rate).toInt().coerceIn(0, n - 1)]
+        var t0 = 0
+        val lags = ArrayList<String>()
+        for ((k, seg) in segs.withIndex()) {
+            val (secs, a, b) = seg
+            val start = t0.toDouble(); val stop = start + secs
+            t0 += secs
+            if (a == 0) continue
+            if (a == b) {
+                val hold = out.filter { it.first >= start + 1 && it.first < stop }
+                val bad = hold.count { it.second == null || abs(it.second!! - a) / a > 0.01 }
+                assertEquals("holding $a rpm: readings off by more than 1%", 0, bad)
+            } else {
+                val ramp = out.filter { it.first >= start + 0.5 && it.first < stop }
+                // Readings trail a ramp: each analysis covers the last 0.19 s, and the tracker smooths a little.
+                fun medianErr(lag: Double) = ramp.map { abs((it.second ?: 0.0) - truthAt(it.first - lag)) / truthAt(it.first - lag) }.sorted()[ramp.size / 2]
+                val lag = (0..50).map { it / 100.0 }.minBy { medianErr(it) }
+                lags += "ramp $a->$b behind by %.2f s, then %.1f%% off".format(lag, medianErr(lag) * 100)
+                assertTrue("ramp $a to $b: behind by $lag s", lag <= 0.25)
+                assertTrue("ramp $a to $b: ${medianErr(lag)} off after the lag", medianErr(lag) < 0.02)
+            }
+            val prev = segs.getOrNull(k - 1)?.third ?: 0
+            if (a != prev) {
+                val lock = out.firstOrNull { it.first >= start && it.second != null && abs(it.second!! - a) / a < 0.03 }
+                val lag = lock?.let { it.first - start }
+                lags += "$prev->$a ${lag?.let { "%.2f s".format(it) } ?: "never"}"
+                assertTrue("lock after $prev -> $a: $lag", lag != null && lag < 0.8)
+            }
+        }
+        val quiet = out.filter { it.first >= n.toDouble() / rate - 1.5 }
+        assertTrue("reports nothing once the sound stops", quiet.all { it.second == null })
+        println("sweep: ${lags.joinToString(", ")}")
     }
 
     // The "true" propeller used to make data: airspeed = k0 + k1·n + k2·u/n + k3·u/n·minutes.

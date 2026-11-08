@@ -21,6 +21,29 @@ class ControllerTest {
         return t
     }
 
+    @Test fun aSpeedSpikeNeverMovesADisarmedMotor() {
+        // A sensor that reports speed spikes while nothing moves: bad GPS, a noisy encoder.
+        var spike = 0.0
+        val seen = mutableListOf<ActuatorOutput>()
+        val liar = object : VehicleAdapter {
+            override val id = "liar"
+            override val capabilities = listOf("throttle", "speed")
+            override fun exchange(output: ActuatorOutput, dtSec: Double): SensorFrame { seen += output; return SensorFrame(spike, null, null, null, null, null, false) }
+            override fun safeStop() {}
+        }
+        val v = VehicleController(liar, ProfileStore(null), log, clock = { now })
+        for (s in listOf(0.0, 40.0, -40.0, 3.0, 0.0)) { spike = s; repeat(5) { now += 20; v.tick(0.02) } }
+        assertTrue(seen.all { it.throttle == 0.0 && it.safe })
+        assertEquals("motors never leave their failsafe value", 1, seen.map { o -> o.channels.map { it.pulseUs } }.distinct().size)
+        // Failsafe is the same.
+        assertTrue(v.submit(Envelope(Source.GROUND, 1, now, Command.SetMode(Mode.MANUAL))).accepted)
+        repeat(300) { now += 20; v.tick(0.02) }
+        assertEquals(Mode.FAILSAFE, v.latest().mode)
+        seen.clear()
+        for (s in listOf(40.0, -40.0)) { spike = s; repeat(5) { now += 20; v.tick(0.02) } }
+        assertTrue(seen.all { it.throttle == 0.0 && it.safe })
+    }
+
     @Test fun duplicateAndOldSequenceRejected() {
         assertTrue(send(Source.GROUND, Command.SetMode(Mode.MANUAL), 10).accepted)
         assertEquals("duplicate", send(Source.GROUND, Command.Drive(0.1, 0.0), 10).code)
