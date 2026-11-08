@@ -50,6 +50,36 @@ class FlightControllerTest {
 
     private fun step(input: ActuatorOutput, armed: Boolean = true): ActuatorOutput { nowMs += 10; nowNs += 10_000_000L; return fc.process(input, armed, 0.01) }
 
+    @Test fun aPlaneMovingFastCountsAsFlyingButAStillOneDoesNot() {
+        fun gps(speed: Double) = fc.onGps(GpsFix(18.53, 73.91, 560.0, speed, 90.0, 4.0, 10, nowMs), 0.0)
+        gps(0.3)
+        assertNull("parked", fc.flyingReason())
+        gps(12.0)
+        assertTrue(fc.flyingReason()!!.contains("12 m/s"))
+        nowMs += 10_000
+        assertNull("no fresh fix: can't tell, so it doesn't refuse", fc.flyingReason())
+        type = "car"
+        gps(12.0)
+        assertNull("only planes", fc.flyingReason())
+    }
+
+    @Test fun aMotorSpunOnTheTestPageIsNeverLearnedAsBackground() {
+        fun hear(hz: Double, seconds: Int, atRest: Boolean) = repeat(seconds * 10) {
+            nowMs += 100
+            fc.onPropTone(PropTone.Tone(hz, 20.0, -20.0), outputsAtRest = atRest)
+        }
+        fun arm() = fc.process(ActuatorOutput(0.0, 0.0), true, 0.01)
+        hear(50.0, 5, atRest = true) // Mains hum, motor still.
+        hear(200.0, 5, atRest = false) // The propeller, spun from the Test page.
+        hear(200.0, 2, atRest = true) // Still spinning down after the test.
+        arm()
+        assertEquals("only the hum is skipped", listOf(50.0), fc.propExclusions())
+        fc.process(ActuatorOutput(0.0, 0.0), false, 0.01)
+        nowMs += 120_000 // Old background is forgotten by the next arming.
+        arm()
+        assertTrue(fc.propExclusions().isEmpty())
+    }
+
     @Test fun readsLevelAndHeading() { feed(0.0, 0.0, 90.0, 3.0); assertAttitude(0.0, 0.0, 90.0) }
     @Test fun readsRoll() { feed(30.0, 0.0, 0.0, 3.0); assertAttitude(30.0, 0.0, 0.0) }
     @Test fun readsPitch() { feed(0.0, 20.0, 0.0, 3.0); assertAttitude(0.0, 20.0, 0.0) }

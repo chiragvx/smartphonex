@@ -109,6 +109,7 @@ Done, in 0.7.0-dev (build 11):
 - **USB hardware:** line settings for SBUS and others, FTDI latency, chip checks, unplug detection and a lasting permission. See `docs/USB_HARDWARE.md`.
 
 - **GPS safety:** a GPS guard smooths, rejects jumps and rates trust; missions and Return home stop when it isn't good; the fence allows for uncertainty and acts when the position is lost; network positions never steer. See `docs/NAVIGATION_SAFETY.md`.
+- **Experimental propeller sensor:** the phone's microphone hears the propeller's motor speed, and can learn airspeed and wind from it in flight. No extra parts, never sets throttle. Plus refusing to disarm a plane that looks airborne. See `docs/SPEED_SAFETY.md`.
 
 Not yet run: the workflows on GitHub (no remote yet), a deploy on a real server with a domain, and the update check against a real published release (tested against a local feed).
 

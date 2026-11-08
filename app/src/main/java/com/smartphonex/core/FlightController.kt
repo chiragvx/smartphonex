@@ -218,6 +218,84 @@ class FlightController(
         return GpsFix(e.lat, e.lon, e.altM, e.speedMps, gps?.courseDeg ?: 0.0, e.radiusM, e.satellites, e.atMs)
     }
 
+    // --- Experimental: the propeller heard through the microphone (PropSensor.kt). Never sets throttle.
+
+    private val propTracker = ToneTracker()
+    private val propAir = PropAirspeed().also { it.restore(savedPropFit()) }
+    private var propTone: PropTone.Tone? = null
+    private var propAtMs = 0L
+    private var armedAtMs = 0L
+    private var lastPropKq = p("PROP_KQ")
+    /**
+     * Tones heard in the minute before arming, with every output at rest: not the propeller (mains hum, fans,
+     * machinery), so skipped once armed. A motor spun on the Test page must never land here, or the real propeller
+     * would be skipped in flight at that speed.
+     */
+    private class Heard(val hz: Double, var atMs: Long)
+    private val propBackground = ArrayDeque<Heard>()
+    /** When every output last came to rest, or 0 while one is being driven. */
+    private var propQuietSinceMs = 0L
+
+    /** Background tones for the analyzer to skip, only while armed: disarmed, everything heard is reported. */
+    fun propExclusions(): List<Double> = synchronized(lock) { if (lastArmed) propBackground.map { it.hz } else emptyList() }
+    /** Why the microphone isn't listening, set by the app, or null when it is. */
+    @Volatile var propUnavailable: String? = null
+
+    /** A tone from the microphone, or null when nothing stood out. Called about ten times a second. */
+    fun onPropTone(tone: PropTone.Tone?, outputsAtRest: Boolean = true) = synchronized(lock) {
+        val now = nowMs()
+        val hz = propTracker.update(tone, now)
+        if (tone != null) { propTone = tone; propAtMs = now }
+        if (!outputsAtRest) propQuietSinceMs = 0L else if (propQuietSinceMs == 0L) propQuietSinceMs = now
+        if (!lastArmed) {
+            propBackground.removeAll { now - it.atMs > PROP_BACKGROUND_MS }
+            // A motor takes a moment to spin down after a test, so wait before trusting the quiet.
+            if (tone != null && propQuietSinceMs > 0 && now - propQuietSinceMs >= PROP_SPINDOWN_MS) {
+                val same = propBackground.firstOrNull { abs(it.hz - tone.hz) <= it.hz * 0.03 }
+                if (same != null) same.atMs = now else {
+                    propBackground.addLast(Heard(tone.hz, now))
+                    while (propBackground.size > 6) propBackground.removeFirst()
+                }
+            }
+        }
+        // Someone set PROP_KQ to 0 to forget: drop the old samples too, or the next fit would learn them again.
+        val kq = p("PROP_KQ")
+        if (kq == 0.0 && lastPropKq > 0.0) { propAir.clear(); log.event("prop", "phone", "forgot", "propeller airspeed forgotten") }
+        lastPropKq = kq
+        if (hz == null || p("MIC_PROP") < 2 || !lastArmed) return@synchronized
+        // Learn only from a fresh, trusted satellite fix, so GPS jumps don't teach it wrong.
+        val g = gps ?: return@synchronized
+        if (now - g.atMs > 1500 || gpsGuard.estimate(now)?.health != GpsGuard.Health.GOOD) return@synchronized
+        propAir.add(PropAirspeed.Sample(hz / p("PROP_BLADES"), lastOutput.throttle, minutesArmed(now), g.speedMps, g.courseDeg))
+        if (propAir.count % 50 == 0) propAir.refit()?.let { f ->
+            if (f.rmsMps <= p("PROP_FIT_RMS")) {
+                val first = p("PROP_KQ") == 0.0
+                listOf("PROP_K0", "PROP_K1", "PROP_K2", "PROP_K3").forEachIndexed { i, n -> params.set(n, f.k[i]) }
+                params.set("PROP_NMIN", f.nMin); params.set("PROP_NMAX", f.nMax); params.set("PROP_KQ", maxOf(f.rmsMps, 0.01))
+                if (first) log.event("prop", "phone", "learned", "propeller airspeed learned from ${f.samples} samples, ±${"%.1f".format(f.rmsMps)} m/s; wind ${"%.0f".format(f.windMps)} m/s from ${f.windFromDeg.toInt()}°")
+            }
+        }
+    }
+
+
+    private fun savedPropFit(): PropAirspeed.Fit? {
+        val q = p("PROP_KQ")
+        if (q <= 0) return null
+        return PropAirspeed.Fit(doubleArrayOf(p("PROP_K0"), p("PROP_K1"), p("PROP_K2"), p("PROP_K3")), q, 0.0, 0.0, p("PROP_NMIN"), p("PROP_NMAX"), 0)
+    }
+
+    private fun minutesArmed(now: Long) = if (lastArmed && armedAtMs > 0) (now - armedAtMs) / 60_000.0 else 0.0
+
+    private fun propHz(now: Long) = propTracker.hz?.takeIf { p("MIC_PROP") >= 1 && now - propAtMs < 1000 }
+
+    /** Airspeed from the propeller, when it's been learned and the motor is in the range it learned. */
+    private fun propAirspeed(now: Long): Double? {
+        if (p("MIC_PROP") < 2 || p("PROP_KQ") <= 0) return null
+        if (propAir.fit == null || propAir.fit?.samples == 0) propAir.restore(savedPropFit())
+        val hz = propHz(now) ?: return null
+        return propAir.airspeed(hz / p("PROP_BLADES"), lastOutput.throttle, minutesArmed(now))
+    }
+
     @Volatile var missions: MissionEngine? = null
     /** Strength of the four best satellites, in dB-Hz. Null when the device doesn't report it. */
     @Volatile var gnssSignal: Double? = null
@@ -341,6 +419,23 @@ class FlightController(
         null
     }
 
+    /**
+     * Why a plane looks airborne, or null. Disarming then is refused: it would cut the motor and drop the controls.
+     * STOP still works, as the deliberate kill switch. Ground vehicles never count as flying. Without a fresh fix it
+     * can't tell, so it doesn't refuse.
+     */
+    fun flyingReason(): String? = synchronized(lock) {
+        if (!isPlane()) return null
+        // Airspeed doesn't drop to zero in a headwind the way ground speed can.
+        propAirspeed(nowMs())?.let { if (it > p("DISARM_AIR_SPD")) return "airspeed about ${"%.0f".format(it)} m/s, from the propeller" }
+        val g = gps ?: return null
+        if (nowMs() - g.atMs > p("GPS_TIMEOUT_S") * 1000) return null
+        if (g.speedMps > p("DISARM_AIR_SPD")) return "moving at ${"%.0f".format(g.speedMps)} m/s"
+        val h = home
+        if (h != null && g.altM - h.altM > DISARM_AIR_ALT_M) return "${(g.altM - h.altM).toInt()} m above home"
+        null
+    }
+
     fun armProblem(): String? = synchronized(lock) {
         val b = batteryPct
         if (b != null && b < p("FS_BATT_MIN")) return "phone battery is ${b.toInt()}%, needs ${p("FS_BATT_MIN").toInt()}%"
@@ -378,6 +473,7 @@ class FlightController(
         val tStart = System.nanoTime()
         val now = nowMs()
         if (armed && !lastArmed && home == null) goodFix()?.let { home = it; log.event("fc", "phone", "home", "home set at arming") }
+        if (armed && !lastArmed) { armedAtMs = now; propBackground.removeAll { now - it.atMs > PROP_BACKGROUND_MS } }
         lastArmed = armed
         monitor(now, armed)
         val out = when (mode) {
@@ -656,6 +752,25 @@ class FlightController(
                 put("heading", lastMagWallMs != 0L)
                 put("altitude", if (lastBaroWallMs != 0L) "barometer" else "GPS only")
             }
+            if (p("MIC_PROP") >= 1) putJsonObject("prop") {
+                val hz = propHz(now)
+                put("status", propUnavailable ?: when {
+                    hz == null -> "listening, no propeller tone"
+                    !lastArmed -> "disarmed: steady tones heard with the motor still count as background, ignored once armed"
+                    else -> "hearing the propeller"
+                })
+                put("hz", hz?.let { r1(it) })
+                put("rpm", hz?.let { Math.round(it / p("PROP_BLADES") * 60) })
+                put("snr", propTone?.takeIf { now - propAtMs < 1000 }?.let { r1(it.snrDb) })
+                if (p("MIC_PROP") >= 2) {
+                    put("air", propAirspeed(now)?.let { r1(it) })
+                    put("learned", p("PROP_KQ") > 0)
+                    put("fitRms", p("PROP_KQ").takeIf { it > 0 }?.let { r1(it) })
+                    put("samples", propAir.count)
+                    put("sectors", propAir.sectorsCovered())
+                    propAir.fit?.takeIf { it.samples > 0 && it.rmsMps <= p("PROP_FIT_RMS") }?.let { f -> put("wind", r1(f.windMps)); put("windFrom", f.windFromDeg.toInt()) }
+                }
+            }
             if (canSeePrivate) {
                 gps?.let { g ->
                     putJsonObject("gps") {
@@ -715,6 +830,10 @@ class FlightController(
         private const val GPS_STALE_MS = 5000L
         private const val GPS_LOST_MS = 10000L
         private const val STALL_MS = 50.0
+        /** Phone GPS height wanders by 10 m or more, so only clearly above home counts as flying. */
+        private const val DISARM_AIR_ALT_M = 15.0
+        private const val PROP_BACKGROUND_MS = 60_000L
+        private const val PROP_SPINDOWN_MS = 3_000L
     }
 }
 

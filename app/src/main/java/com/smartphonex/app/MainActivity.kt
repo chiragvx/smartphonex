@@ -31,11 +31,22 @@ class MainActivity : ComponentActivity() {
     private var padSeq = 0L
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
 
+    private var micAsked = false
+
+    /** The microphone is only asked for once someone turns on the experimental propeller listener, and only once. */
+    private fun askMicIfNeeded(rt: VehicleRuntime) {
+        if (micAsked || rt.params.get("MIC_PROP") < 1) return
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) return
+        micAsked = true
+        requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), 2)
+    }
+
     private val refresh = object : Runnable {
         override fun run() {
             VehicleService.runtime?.let { rt ->
                 showApprovals(rt)
                 drivePad(rt)
+                askMicIfNeeded(rt)
             }
             handler.postDelayed(this, 50)
         }

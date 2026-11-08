@@ -27,6 +27,7 @@ class VehicleService : Service() {
     private var net: NetMonitor? = null
     private var sensors: AndroidSensors? = null
     private var camera: CameraStreamer? = null
+    private var prop: PropListener? = null
     private var mavlink: MavlinkBridge? = null
     private var recorder: VideoRecorder? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -104,6 +105,7 @@ class VehicleService : Service() {
             cam.reconcile()
         }
         phoneSensors.start()
+        prop = PropListener(this, rt)
         val client = RelayClient(rt, filesDir, cam).also { relay = it; relayClient = it }
         client.start()
         net = NetMonitor(this, rt, client::networkChanged).also { it.start() }
@@ -118,6 +120,8 @@ class VehicleService : Service() {
         relay?.stop()
         relayClient = null
         sensors?.stop()
+        prop?.stop()
+        prop = null
         mavlink?.stop()
         camera?.stop()
         cameraStreamer = null
@@ -193,6 +197,7 @@ class VehicleService : Service() {
         var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
         if (granted(Manifest.permission.CAMERA)) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
         if (granted(Manifest.permission.ACCESS_FINE_LOCATION)) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+        if (granted(Manifest.permission.RECORD_AUDIO)) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         try {
             startForeground(1, n, types)
         } catch (e: RuntimeException) {

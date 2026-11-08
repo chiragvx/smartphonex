@@ -302,6 +302,9 @@ class VehicleController(
     private fun setMode(source: Source, target: Mode, p: VehicleProfile, now: Long): CommandResult {
         if (target == Mode.FAILSAFE) return CommandResult.reject("not_permitted", "FAILSAFE cannot be requested")
         if (drillRunning && target != Mode.DISARMED) return CommandResult.reject("not_permitted", "a test is running")
+        // Disarming a flying plane cuts its motor and controls. STOP remains the deliberate way to do that.
+        if (target == Mode.DISARMED && (mode == Mode.MANUAL || mode == Mode.AUTO) && fcActive)
+            fc?.flyingReason()?.let { return CommandResult.reject("not_permitted", "the plane looks airborne ($it). Land first, or press STOP to cut the motor") }
         if (target != Mode.DISARMED && fcActive) fc?.armProblem()?.let { return CommandResult.reject("not_permitted", it) }
         if (target != Mode.DISARMED) deviceHooks?.armProblem()?.let { return CommandResult.reject("not_permitted", it) }
         if (source == Source.AI) {

@@ -334,7 +334,8 @@ Deviations from the plan:
 - **Replay video:** about two pictures a second are saved with each run while the camera is on, not full video. They're synced to the charts.
 - **Dangerous triggers** fire only by hand or from a point in a plan a person sent. Time, distance, sensor and receiver can't fire them.
 - **AI:** a mission or trim from an LLM always waits for a person's approval. Missions stay off for planes.
-- **Not built:** disarm refusal in flight, stick expo and gamepad remapping, settings comparison beyond history and restore, a direction check, and trigger conditions limited to a geofence, altitude or speed.
+- **Disarm in flight:** refused for a plane that's moving faster than `DISARM_AIR_SPD` (4 m/s) or is 15 m above home, on a fresh GPS fix. STOP still cuts the motor. Without a fresh fix it can't tell, so it doesn't refuse.
+- **Not built:** stick expo and gamepad remapping, settings comparison beyond history and restore, a direction check, and trigger conditions limited to a geofence, altitude or speed.
 
 Automated results, on build 10:
 - 187 unit tests and 29 relay tests.

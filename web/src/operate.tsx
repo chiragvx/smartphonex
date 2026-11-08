@@ -243,6 +243,14 @@ function Stats() {
   if (gps?.nav) rows.push(['Navigation', `${NAV_TEXT[gps.nav.health] ?? gps.nav.health}, ±${Math.round(gps.nav.radius)} m${gps.nav.rejected ? `, ${gps.nav.rejected} jumps ignored` : ''}`]);
   if (gps) rows.push(['GPS', `±${gps.acc.toFixed(0)} m, ${gps.sats} sats`], ['GPS signal', gps.signal != null ? `${gps.signal.toFixed(0)} dB-Hz${gps.signal < 30 ? ', weak' : ''}` : '--'], ['Speed', `${gps.speed.toFixed(1)} m/s`], ['Altitude', `${gps.alt.toFixed(0)} m`]);
   if (S.fcs?.home?.dist != null) rows.push(['Home', `${S.fcs.home.dist.toFixed(0)} m`]);
+  // Experimental: the propeller heard through the phone's microphone (MIC_PROP).
+  const prop = S.fcs?.prop;
+  if (prop) {
+    rows.push(['Propeller (mic)', prop.rpm != null ? `${prop.rpm} rpm` : prop.status]);
+    if (prop.learned !== undefined) rows.push(['Airspeed (prop)', prop.air != null ? `~${prop.air.toFixed(1)} m/s`
+      : prop.learned ? 'out of learned range' : `learning: ${prop.sectors}/8 directions`]);
+    if (prop.wind != null) rows.push(['Wind (prop)', `${prop.wind.toFixed(0)} m/s from ${prop.windFrom}°`]);
+  }
   return <div class={`stats ${stale() ? 'isStale' : ''}`} id="stats">{rows.map(([k, v]) => <div key={k}><b>{v}</b><i>{k}</i></div>)}</div>;
 }
 
