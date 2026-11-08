@@ -91,6 +91,13 @@ class FlightController(
     private var vibration = 0.0
     private var gps: GpsFix? = null
     private var home: GpsFix? = null
+    /** The vehicle's top speed, for telling a real move from a GPS jump. Set by the runtime from the active profile. */
+    @Volatile var maxSpeedMps: () -> Double = { 5.0 }
+    /** Every fix passes through this before navigation sees it. */
+    val gpsGuard = GpsGuard({ p("ARM_GPS_ACC") }, { p("GPS_TIMEOUT_S") }, { maxSpeedMps() })
+    private var lastRejectLogMs = 0L
+    private var navWaitSince = 0L
+    private var lastNavHealth: GpsGuard.Health? = null
     private var arrivedHome = false
     private var batteryPct: Double? = null
     private var batteryKnown = false
@@ -184,10 +191,31 @@ class FlightController(
 
     fun onBaro(hPa: Float) = synchronized(lock) { lastBaroWallMs = nowMs(); pressureHpa = hPa.toDouble() }
 
-    fun onGps(fix: GpsFix, declination: Double?) = synchronized(lock) {
+    /**
+     * A new position. [fromSatellites] is false for Android's network position (Wi-Fi and cell towers): it's shown,
+     * but never steers anything, because it can be hundreds of metres out while claiming far better.
+     */
+    fun onGps(fix: GpsFix, declination: Double?, fromSatellites: Boolean = true) = synchronized(lock) {
         gps = fix
         gpsRate.tick()
         if (declination != null) declinationDeg = declination
+        if (!fromSatellites) return@synchronized
+        // Only an armed vehicle that isn't being driven is surely still. Disarmed, it may be carried, as in a walk test.
+        val moving = !lastArmed || kotlin.math.abs(lastOutput.throttle) > 0.05
+        when (val v = gpsGuard.feed(fix, moving)) {
+            is GpsGuard.Verdict.Reset -> log.event("gps", "phone", "jump", "${v.reason}: navigation waits until it settles")
+            is GpsGuard.Verdict.Rejected -> if (fix.atMs - lastRejectLogMs > 5000) { lastRejectLogMs = fix.atMs; log.event("gps", "phone", "rejected", "GPS fix ignored: ${v.reason}") }
+            else -> {}
+        }
+    }
+
+    /** The guarded position: smoothed, with jumps removed, and how far to trust it. */
+    fun navEstimate(): GpsGuard.Estimate? = synchronized(lock) { gpsGuard.estimate(nowMs()) }
+
+    /** The guarded position as a fix, only when it's good enough to navigate on. Its accuracy is the guard's radius. */
+    private fun navFix(): GpsFix? {
+        val e = gpsGuard.estimate(nowMs())?.takeIf { it.health == GpsGuard.Health.GOOD } ?: return null
+        return GpsFix(e.lat, e.lon, e.altM, e.speedMps, gps?.courseDeg ?: 0.0, e.radiusM, e.satellites, e.atMs)
     }
 
     @Volatile var missions: MissionEngine? = null
@@ -195,7 +223,8 @@ class FlightController(
     @Volatile var gnssSignal: Double? = null
     fun gpsText(): String? = synchronized(lock) {
         val g = gps ?: return null
-        "±${g.accuracyM.toInt()} m, ${g.satellites} satellites" + (gnssSignal?.let { ", signal ${it.toInt()} dB-Hz" } ?: "")
+        "±${g.accuracyM.toInt()} m, ${g.satellites} satellites" + (gnssSignal?.let { ", signal ${it.toInt()} dB-Hz" } ?: "") +
+            ". For navigation: " + gpsGuard.describe(gpsGuard.estimate(nowMs())).replaceFirstChar { it.lowercase() }
     }
     /** Asks the controller for a latched failsafe at its next step. */
     fun requestFailsafe(why: String) = synchronized(lock) { failsafeRequest = why }
@@ -217,7 +246,7 @@ class FlightController(
         val g = gps
         mapOf(
             "gyro" to st(lastGyroWallMs), "accel" to st(lastAccelWallMs), "compass" to st(lastMagWallMs), "baro" to st(lastBaroWallMs),
-            "gps" to when { g == null -> "none"; now - g.atMs < GPS_STALE_MS && g.accuracyM <= p("ARM_GPS_ACC") -> "ok"; else -> "bad" },
+            "gps" to when { g == null -> "none"; navFix() != null -> "ok"; else -> "bad" },
             "attitude" to if (estimator.converged) "ok" else "bad",
             "timing" to if (dtMaxShown < STALL_MS) "ok" else "bad",
             "battery" to when (val b = batteryPct) { null -> "none"; else -> if (b >= p("FS_BATT_MIN")) "ok" else "bad" },
@@ -280,12 +309,18 @@ class FlightController(
         null
     }
 
-    private fun goodFix(): GpsFix? = gps?.takeIf { nowMs() - it.atMs < GPS_STALE_MS && it.accuracyM <= p("ARM_GPS_ACC") }
+    private fun goodFix(): GpsFix? = navFix()
 
     private fun gpsProblem(): String {
-        val g = gps ?: return "no GPS position: turn on Location under Sensors and go outside"
-        if (nowMs() - g.atMs >= GPS_STALE_MS) return "GPS position is out of date"
-        return "GPS accuracy is ${g.accuracyM.toInt()} m, needs ${p("ARM_GPS_ACC").toInt()} m"
+        gps ?: return "no GPS position: turn on Location under Sensors and go outside"
+        val e = gpsGuard.estimate(nowMs()) ?: return "no GPS position yet"
+        return when (e.health) {
+            GpsGuard.Health.LOST -> "GPS position is out of date"
+            GpsGuard.Health.GLITCH -> "the GPS position just jumped. Wait a few seconds for it to settle"
+            GpsGuard.Health.SETTLING -> "GPS is still settling. Wait a few seconds"
+            GpsGuard.Health.DEGRADED -> "GPS is only good to ±${e.radiusM.toInt()} m, needs ${p("ARM_GPS_ACC").toInt()} m. Go somewhere with open sky"
+            else -> "GPS isn't good enough"
+        }
     }
 
     /** Why this mode can't be used now, or null when it can. */
@@ -294,6 +329,7 @@ class FlightController(
         if (nowMs() - lastGyroWallMs > SENSOR_STALE_MS) return "no gyroscope data: this phone can't stabilize"
         if (!estimator.converged) return "attitude is still settling"
         if (gyroRate.hz > 0 && gyroRate.hz < p("ARM_RATE_MIN")) return "gyro is only ${gyroRate.hz.toInt()} Hz, needs ${p("ARM_RATE_MIN").toInt()} Hz"
+        if (m == FlightMode.AUTO) goodFix() ?: return gpsProblem()
         if (m == FlightMode.RETURN_HOME) {
             goodFix() ?: return gpsProblem()
             if (home == null) return "no home position: use Set home"
@@ -425,12 +461,32 @@ class FlightController(
 
     /** Follows the mission. The engine says where, and this steers there. */
     private fun auto(input: ActuatorOutput, dt: Double): ActuatorOutput {
-        val g = gps?.takeIf { nowMs() - it.atMs < GPS_LOST_MS }
+        val now = nowMs()
+        val est = gpsGuard.estimate(now)
+        val item = missions?.currentItem()
+        // Navigate only on a good position that's tighter than the point it's heading for (with some slack, so
+        // accuracy hovering around the radius doesn't make it stop and start). Otherwise stop and wait.
+        val usable = est != null && est.health == GpsGuard.Health.GOOD && (item == null || est.radiusM <= item.radiusM * 1.5)
+        if (!usable) {
+            if (navWaitSince == 0L) {
+                navWaitSince = now
+                log.event("gps", "phone", "waiting", "Mission waiting: ${gpsGuard.describe(est).replaceFirstChar { it.lowercase() }}" +
+                    if (est != null && item != null && est.health == GpsGuard.Health.GOOD) ", point needs ${item.radiusM.toInt()} m" else "")
+            }
+            if (now - navWaitSince > p("NAV_WAIT_S") * 1000) {
+                log.event("failsafe", "phone", "gps", "GPS not good enough for ${p("NAV_WAIT_S").toInt()} s: mission paused for a person to decide")
+                missions?.pause()
+                enterMode(FlightMode.HOLD, "GPS not good enough")
+                navWaitSince = 0L
+            }
+            return holdHere(input, dt)
+        }
+        if (navWaitSince != 0L) { log.event("gps", "phone", "resumed", "Position good again: mission continues"); navWaitSince = 0L }
+        val g = navFix()
         return when (val s = missions?.step(g)) {
             is MissionEngine.Step.GoTo -> {
-                val fix = gps
-                if (fix == null) holdHere(input, dt)
-                else steerToHeading(input, Navigation.bearingDeg(fix.lat, fix.lon, s.lat, s.lon), s.throttle ?: p("WP_THROTTLE"), dt)
+                if (g == null) holdHere(input, dt)
+                else steerToHeading(input, Navigation.bearingDeg(g.lat, g.lon, s.lat, s.lon), s.throttle ?: p("WP_THROTTLE"), dt)
             }
             is MissionEngine.Step.End -> {
                 log.event("mission", "phone", "complete", "mission complete: ${s.action}")
@@ -449,9 +505,10 @@ class FlightController(
     fun takeMissionStop(): Boolean = synchronized(lock) { missionStopRequest.also { missionStopRequest = false } }
 
     private fun returnHome(input: ActuatorOutput, dt: Double): ActuatorOutput {
-        val g = gps
+        val g = navFix()
         val h = home
-        if (g == null || h == null) return holdHeading(input, dt)
+        // No trustworthy position: stop (a plane circles) rather than drive on a guess.
+        if (g == null || h == null) return holdHere(input, dt)
         val dist = Navigation.distanceM(g.lat, g.lon, h.lat, h.lon)
         if (dist < p("RTH_RADIUS")) {
             if (!arrivedHome) { arrivedHome = true; log.event("fc", "phone", "home", "arrived home") }
@@ -469,12 +526,19 @@ class FlightController(
             enterMode(FlightMode.MANUAL, "gyroscope stopped")
             if (armed) failsafeRequest = "gyroscope stopped"
         }
-        if (mode == FlightMode.AUTO && (gps == null || now - gps!!.atMs > GPS_LOST_MS)) {
+        val navHealth = gpsGuard.estimate(now)?.health
+        if (navHealth != lastNavHealth) {
+            if (lastNavHealth != null && navHealth != null && armed) log.event("gps", "phone", navHealth.name.lowercase(), "Navigation position: ${gpsGuard.describe(gpsGuard.estimate(now)).replaceFirstChar { it.lowercase() }}")
+            lastNavHealth = navHealth
+        }
+        val gpsLost = gps == null || navHealth == null || navHealth == GpsGuard.Health.LOST
+        if (mode != FlightMode.AUTO) navWaitSince = 0L
+        if (mode == FlightMode.AUTO && gpsLost) {
             log.event("failsafe", "phone", "gps", "GPS lost during the mission: holding")
             missions?.pause()
             enterMode(FlightMode.HOLD, "GPS lost")
         }
-        if (mode == FlightMode.RETURN_HOME && (gps == null || now - gps!!.atMs > GPS_LOST_MS)) {
+        if (mode == FlightMode.RETURN_HOME && gpsLost) {
             // Without a position there's no way home: hold what we can, and the pilot must take over.
             enterMode(if (isPlane()) FlightMode.STABILIZE else FlightMode.MANUAL, "GPS lost")
             if (armed && !isPlane()) failsafeRequest = "GPS lost during return home"
@@ -579,7 +643,7 @@ class FlightController(
                 put("accel", health(fresh(lastAccelWallMs)))
                 put("compass", health(fresh(lastMagWallMs)))
                 put("baro", health(fresh(lastBaroWallMs)))
-                put("gps", health(gpsFresh?.let { it && gps!!.accuracyM <= p("ARM_GPS_ACC") }))
+                put("gps", health(gpsFresh?.let { it && navFix() != null }))
                 put("attitude", health(estimator.converged))
                 put("timing", health(dtMaxShown < STALL_MS))
                 put("battery", health(batteryPct?.let { it >= p("FS_BATT_MIN") }))
@@ -597,6 +661,10 @@ class FlightController(
                     putJsonObject("gps") {
                         put("lat", g.lat); put("lon", g.lon); put("alt", r1(g.altM)); put("speed", r1(g.speedMps))
                         put("course", r1(g.courseDeg)); put("acc", r1(g.accuracyM)); put("sats", g.satellites); put("signal", gnssSignal?.let { r1(it) })
+                        gpsGuard.estimate(nowMs())?.let { e -> putJsonObject("nav") {
+                            put("health", e.health.name.lowercase()); put("radius", r1(e.radiusM)); put("lat", e.lat); put("lon", e.lon)
+                            put("rejected", gpsGuard.rejected); put("resets", gpsGuard.resets)
+                        } }
                         put("ageMs", now - g.atMs)
                     }
                 }

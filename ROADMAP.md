@@ -108,6 +108,8 @@ Done, in 0.7.0-dev (build 11):
 - **Performance:** a stress test (`tools/stress.mjs`) and fixes from it and from research into other phone controllers: less screen drawing, top priority and hint sessions for time-critical threads, low-latency Wi-Fi, heat shedding, and battery-limit checks. See `docs/PERFORMANCE.md`.
 - **USB hardware:** line settings for SBUS and others, FTDI latency, chip checks, unplug detection and a lasting permission. See `docs/USB_HARDWARE.md`.
 
+- **GPS safety:** a GPS guard smooths, rejects jumps and rates trust; missions and Return home stop when it isn't good; the fence allows for uncertainty and acts when the position is lost; network positions never steer. See `docs/NAVIGATION_SAFETY.md`.
+
 Not yet run: the workflows on GitHub (no remote yet), a deploy on a real server with a domain, and the update check against a real published release (tested against a local feed).
 
 Next: onboarding and a docs site, the remaining Phase 1 gaps, then customization.

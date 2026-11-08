@@ -100,7 +100,7 @@ class VehicleRuntime(val dir: File) {
     private val preview = OutputPreview()
     val profiles = ProfileStore(File(dir, "profiles.json"))
     val params = ParamStore(File(dir, "params.json")) { profiles.activeId }
-    val fc = FlightController(params, log, { profiles.active.vehicleType })
+    val fc = FlightController(params, log, { profiles.active.vehicleType }).also { it.maxSpeedMps = { profiles.active.maxSpeedMps } }
     val flightLog = FlightLog(File(dir, "logs"))
     private lateinit var opsHolder: Ops
     val ops: Ops get() = opsHolder

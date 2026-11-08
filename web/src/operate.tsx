@@ -10,6 +10,11 @@ export function firePrepared(t: { id: string; label: string }) {
   cmd('trigger_prepare', { id: t.id }, { quiet: true }).then(r => { if (r.accepted) cmd('trigger_fire', { id: t.id }, { label: t.label }); });
 }
 
+/** What the GPS guard's state means, in words. */
+const NAV_TEXT: Record<string, string> = {
+  good: 'Good', settling: 'GPS settling', degraded: 'GPS too rough to navigate', glitch: 'GPS jumped, checking it', lost: 'GPS position lost',
+};
+
 function MapView({ goHere }: { goHere: boolean }) {
   const [, redraw] = useState(0);
   const { ref, map } = useMap((m: TileMap) => {
@@ -25,7 +30,9 @@ function MapView({ goHere }: { goHere: boolean }) {
       const home = S.fcs?.home;
       if (home) drawHome(mm, g, home.lat, home.lon);
       const gps = S.fcs?.gps;
-      if (gps) drawVehicle(mm, g, gps.lat, gps.lon, S.fc?.a?.[2] ?? gps.course ?? 0, gps.acc);
+      const nav = gps?.nav;
+      if (gps && nav) drawVehicle(mm, g, nav.lat, nav.lon, S.fc?.a?.[2] ?? gps.course ?? 0, nav.radius, nav.health === 'good', { lat: gps.lat, lon: gps.lon });
+      else if (gps) drawVehicle(mm, g, gps.lat, gps.lon, S.fc?.a?.[2] ?? gps.course ?? 0, gps.acc, false);
     };
     redraw(x => x + 1);
   });
@@ -50,6 +57,7 @@ function MapView({ goHere }: { goHere: boolean }) {
       <canvas ref={ref} id="map" />
       <LayerSwitch map={map.current} />
       {!gps && <div class="onmap dim">No position yet. Turn on Location in Setup.</div>}
+      {gps?.nav && gps.nav.health !== 'good' && <div class="onmap" id="navWarn">{NAV_TEXT[gps.nav.health] ?? 'Navigation waits'} (±{Math.round(gps.nav.radius)} m). Missions and Return home wait, stopped.</div>}
       <button class="center-on" onClick={() => { const m = map.current; if (m) { m.userMoved = false; m.draw(); } }}>Follow</button>
     </div>
   );
@@ -232,6 +240,7 @@ function Stats() {
     ['Loop', `${fmt(tel?.loopHz, 0)} Hz`], ['Slowest step', `${fmt(tel?.loopDtMaxMs)} ms`], ['Sensor delay', `${fmt(t?.delayAvgMs)} ms`],
     ['Vibration', `${fmt(S.fcs?.vib)}`],
   ];
+  if (gps?.nav) rows.push(['Navigation', `${NAV_TEXT[gps.nav.health] ?? gps.nav.health}, ±${Math.round(gps.nav.radius)} m${gps.nav.rejected ? `, ${gps.nav.rejected} jumps ignored` : ''}`]);
   if (gps) rows.push(['GPS', `±${gps.acc.toFixed(0)} m, ${gps.sats} sats`], ['GPS signal', gps.signal != null ? `${gps.signal.toFixed(0)} dB-Hz${gps.signal < 30 ? ', weak' : ''}` : '--'], ['Speed', `${gps.speed.toFixed(1)} m/s`], ['Altitude', `${gps.alt.toFixed(0)} m`]);
   if (S.fcs?.home?.dist != null) rows.push(['Home', `${S.fcs.home.dist.toFixed(0)} m`]);
   return <div class={`stats ${stale() ? 'isStale' : ''}`} id="stats">{rows.map(([k, v]) => <div key={k}><b>{v}</b><i>{k}</i></div>)}</div>;

@@ -169,7 +169,13 @@ class OpsRuntimeTest {
         settled = true
         repeat(3000) { ns += 5_000_000L; rt.fc.onAccel(0f, 0f, 9.81f); rt.fc.onGyro(ns, 0f, 0f, 0f) }
     }
-    private fun gps(lat: Double = LAT, lon: Double = LON) = settle().let { rt.fc.onGps(GpsFix(lat, lon, 200.0, 1.0, 0.0, 3.0, 10, System.currentTimeMillis()), null) }
+    /** Puts the vehicle here. A jump to a new place resets the GPS guard, as if it had settled there. */
+    private fun gps(lat: Double = LAT, lon: Double = LON) {
+        settle()
+        val e = rt.fc.navEstimate()
+        if (e == null || Navigation.distanceM(e.lat, e.lon, lat, lon) > 1.0) rt.fc.gpsGuard.reset()
+        repeat(GpsGuard.SETTLE_FIXES + 1) { rt.fc.onGps(GpsFix(lat, lon, 200.0, 1.0, 0.0, 3.0, 10, System.currentTimeMillis()), null) }
+    }
     private fun mission(vararg lat: Double) = buildJsonObject {
         put("name", "walk"); putJsonArray("items") { lat.forEach { l -> addJsonObject { put("lat", l); put("lon", LON); put("radiusM", 3.0) } } }
     }
@@ -354,6 +360,29 @@ class OpsRuntimeTest {
         rt.ops.tick(rt.controller.tick(0.01))
         assertEquals(FlightMode.HOLD, rt.fc.mode)
         assertTrue(rt.log.allEvents().any { it.kind == "failsafe" && it.code == "fence" })
+    }
+
+    @Test fun missionWontStartWhenItsRadiusIsTighterThanTheGps() {
+        gps()
+        ops("mission_upload") { put("mission", buildJsonObject { putJsonArray("items") { addJsonObject { put("lat", north(50.0)); put("lon", LON); put("radiusM", 1.0) } } }) }
+        val r = ops("mission_start")
+        assertFalse(r.accepted)
+        assertTrue(r.message, "arrival radius" in r.message && "Widen" in r.message)
+    }
+
+    @Test fun losingThePositionWithAFenceSetActsOnTheFence() {
+        assertTrue(ops("fence_set") { put("fence", buildJsonObject { put("maxDistM", 200.0); put("action", "hold") }) }.accepted)
+        gps()
+        assertNull(rt.fc.setHomeHere())
+        assertTrue(cmd(Command.SetMode(Mode.MANUAL)).accepted)
+        rt.ops.tick(rt.controller.tick(0.01))
+        assertEquals(FlightMode.MANUAL, rt.fc.mode)
+        // The guard calls the position lost after GPS_TIMEOUT_S without a fix. Simulate it with an old fix.
+        rt.fc.gpsGuard.reset()
+        rt.fc.onGps(GpsFix(LAT, LON, 200.0, 1.0, 0.0, 3.0, 10, System.currentTimeMillis() - 60_000), null)
+        rt.ops.tick(rt.controller.tick(0.01))
+        assertEquals(FlightMode.HOLD, rt.fc.mode)
+        assertTrue(rt.log.allEvents().any { it.kind == "failsafe" && it.code == "fence" && "position lost" in it.message })
     }
 
     @Test fun linkLossAppliesTheMissionsRule() {

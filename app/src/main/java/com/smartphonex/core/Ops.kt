@@ -158,11 +158,34 @@ object Geo {
         return odd
     }
 
-    /** Why this position breaks the fence, or null. */
-    fun breach(f: Fence, lat: Double, lon: Double, alt: Double?, home: GpsFix?): String? {
+    /** Shortest distance in metres from a point to a polygon's edge. Flat-earth maths, fine at fence sizes. */
+    fun edgeDistanceM(lat: Double, lon: Double, poly: List<Pair<Double, Double>>): Double {
+        val kLat = 111_320.0
+        val kLon = kLat * kotlin.math.cos(Math.toRadians(lat))
+        var best = Double.MAX_VALUE
+        for (i in poly.indices) {
+            val (aLat, aLon) = poly[i]; val (bLat, bLon) = poly[(i + 1) % poly.size]
+            val ax = (aLon - lon) * kLon; val ay = (aLat - lat) * kLat
+            val bx = (bLon - lon) * kLon; val by = (bLat - lat) * kLat
+            val dx = bx - ax; val dy = by - ay
+            val len2 = dx * dx + dy * dy
+            val t = if (len2 == 0.0) 0.0 else (-(ax * dx + ay * dy) / len2).coerceIn(0.0, 1.0)
+            val px = ax + t * dx; val py = ay + t * dy
+            best = minOf(best, kotlin.math.sqrt(px * px + py * py))
+        }
+        return best
+    }
+
+    /**
+     * Why this position breaks the fence, or null. [marginM] is how unsure the position is: the vehicle could be
+     * anywhere within it, so being inside by less than that counts as a breach. Planning checks pass 0.
+     */
+    fun breach(f: Fence, lat: Double, lon: Double, alt: Double?, home: GpsFix?, marginM: Double = 0.0): String? {
         if (f.polygon.size >= 3 && !inside(lat, lon, f.polygon)) return "outside the fence"
+        if (marginM > 0 && f.polygon.size >= 3 && edgeDistanceM(lat, lon, f.polygon) < marginM) return "within ${marginM.toInt()} m of the fence, closer than GPS can tell"
         f.keepOut.forEachIndexed { i, p -> if (p.size >= 3 && inside(lat, lon, p)) return "inside keep-out area ${i + 1}" }
-        if (f.maxDistM > 0 && home != null && Navigation.distanceM(home.lat, home.lon, lat, lon) > f.maxDistM) return "more than ${f.maxDistM.toInt()} m from home"
+        f.keepOut.forEachIndexed { i, p -> if (marginM > 0 && p.size >= 3 && edgeDistanceM(lat, lon, p) < marginM) return "within ${marginM.toInt()} m of keep-out area ${i + 1}, closer than GPS can tell" }
+        if (f.maxDistM > 0 && home != null && Navigation.distanceM(home.lat, home.lon, lat, lon) + marginM > f.maxDistM) return "more than ${f.maxDistM.toInt()} m from home" + if (marginM > 0) ", allowing for GPS" else ""
         if (f.maxAltM > 0 && home != null && alt != null && alt - home.altM > f.maxAltM) return "above ${f.maxAltM.toInt()} m"
         return null
     }
@@ -249,6 +272,9 @@ class MissionEngine(private val clock: () -> Long) {
     @Synchronized fun abort() { if (state == State.RUNNING || state == State.PAUSED) state = State.ABORTED }
     @Synchronized fun skip() { if (state == State.RUNNING) { index++; arrived = false; holdUntil = 0 } }
     @Synchronized fun guided(lat: Double, lon: Double) { load(Mission("Go here", listOf(MissionItem(lat, lon)))); start() }
+
+    /** The point being headed for, while running. */
+    @Synchronized fun currentItem(): MissionItem? = if (state == State.RUNNING) mission?.items?.getOrNull(index) else null
 
     @Synchronized fun step(g: GpsFix?): Step {
         val m = mission ?: return Step.Hold
@@ -395,8 +421,9 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         out += Check("gps", "GPS", when { gps == "ok" -> "ok"; needGps -> "fail"; else -> "warn" }, fc.gpsText() ?: "No usable position", if (gps == "ok") weakSignalFix() else "Turn on Location under Sensors, and go outside")
         val fixNow = fc.gpsNow
         val tightest = missions.mission?.items?.minOfOrNull { it.radiusM }
-        if (fixNow != null && tightest != null && fixNow.accuracyM > tightest) {
-            out += Check("gpsfit", "Waypoint accuracy", "warn", "GPS is ±${fixNow.accuracyM.toInt()} m, but the tightest arrival radius is ${tightest.toInt()} m. Points may trigger early or late", "Use a larger radius, or wait for a better position")
+        val navNow = fc.navEstimate()
+        if (fixNow != null && navNow != null && tightest != null && navNow.radiusM > tightest) {
+            out += Check("gpsfit", "Waypoint accuracy", "warn", "GPS is good to ±${navNow.radiusM.toInt()} m, but the tightest arrival radius is ${tightest.toInt()} m. The mission won't start until it fits", "Use a larger radius, or wait for a better position")
         }
         out += Check("battery", "Battery", if (h["battery"] == "bad") "fail" else "ok", fc.batteryText(), if (h["battery"] == "bad") "Charge the phone" else "")
         out += Check("heat", "Temperature", if (h["heat"] == "bad") "warn" else "ok", if (h["heat"] == "bad") "Phone is overheating" else "Normal", if (h["heat"] == "bad") "Let it cool down" else "")
@@ -605,7 +632,11 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         if (!p.missionsAllowed) return CommandResult.reject("unsupported", "missions aren't available for this vehicle type")
         val before = rt.fc.mode
         rt.fc.setModeForce(FlightMode.AUTO)
-        val problem = rt.fc.modeProblem(FlightMode.AUTO) ?: armProblem()
+        val est = rt.fc.navEstimate()
+        val tightest = missions.mission?.items?.minOfOrNull { it.radiusM }
+        val tooTight = if (est != null && tightest != null && est.radiusM > tightest)
+            "GPS is good to ±${est.radiusM.toInt()} m, but the tightest arrival radius is ${tightest.toInt()} m. Widen it to at least ${kotlin.math.ceil(est.radiusM).toInt()} m, or wait for a better position" else null
+        val problem = rt.fc.modeProblem(FlightMode.AUTO) ?: tooTight ?: armProblem()
         if (problem != null) { rt.fc.setModeForce(before); return CommandResult.reject("not_permitted", problem) }
         val r = rt.controller.startAuto(source)
         if (!r.accepted) { rt.fc.setModeForce(before); return r }
@@ -720,8 +751,11 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         }
         // The fence is checked on every position, in any mode, whatever the screen is doing.
         val f = fence
-        if (armed && f.isSet && g != null) {
-            val b = Geo.breach(f, g.lat, g.lon, g.altM, rt.fc.homeNow)
+        val est = rt.fc.navEstimate()
+        // Checked even when fixes stop arriving: a fence that can't be checked counts as broken.
+        if (armed && f.isSet) {
+            val b = if (est == null || est.health == GpsGuard.Health.LOST) "position lost, so the fence can't be checked"
+                else Geo.breach(f, est.lat, est.lon, g?.altM, rt.fc.homeNow, est.radiusM + rt.params.get("FENCE_MARGIN"))
             if (b != null && breachReason == null) {
                 rt.log.event("failsafe", "phone", "fence", "Fence: $b. Action: ${f.action}")
                 when (f.action) {

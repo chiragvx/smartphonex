@@ -200,13 +200,17 @@ class AndroidSensors(private val context: Context, private val rt: VehicleRuntim
         if (loc?.enabled == true) startLocation() else stopLocation()
     }
 
+    /** Only here to ask for full tracking. The raw measurements themselves aren't used yet. */
+    private val measurements = object : android.location.GnssMeasurementsEvent.Callback() {}
+
     private val locationListener = object : LocationListener {
         override fun onLocationChanged(l: Location) {
             // A GPS fix wins over a rough network position while GPS is working.
             if (l.provider == LocationManager.GPS_PROVIDER) lastGpsFixMs = System.currentTimeMillis()
             else if (System.currentTimeMillis() - lastGpsFixMs < 5000) return
             val declination = android.hardware.GeomagneticField(l.latitude.toFloat(), l.longitude.toFloat(), l.altitude.toFloat(), System.currentTimeMillis()).declination.toDouble()
-            rt.fc.onGps(GpsFix(l.latitude, l.longitude, l.altitude, l.speed.toDouble(), l.bearing.toDouble(), l.accuracy.toDouble(), satellites, System.currentTimeMillis()), declination)
+            rt.fc.onGps(GpsFix(l.latitude, l.longitude, l.altitude, l.speed.toDouble(), l.bearing.toDouble(), l.accuracy.toDouble(), satellites, System.currentTimeMillis()), declination,
+                fromSatellites = l.provider == LocationManager.GPS_PROVIDER)
             rt.sensors.update("phone.location", doubleArrayOf(
                 l.latitude, l.longitude, l.altitude, l.speed.toDouble(), l.bearing.toDouble(), l.accuracy.toDouble(), satellites.toDouble(),
             ))
@@ -235,6 +239,11 @@ class AndroidSensors(private val context: Context, private val rt: VehicleRuntim
                 if (p in providers) lm.requestLocationUpdates(p, 1000L, 0f, locationListener, thread.looper)
             }
             lm.registerGnssStatusCallback(gnssCallback, handler)
+            // Keep the GPS chip tracking all the time instead of duty-cycling to save power, which causes jumps and
+            // dropped satellites. Costs some battery while Location is on. Android 12 and later.
+            if (android.os.Build.VERSION.SDK_INT >= 31) runCatching {
+                lm.registerGnssMeasurementsCallback(android.location.GnssMeasurementRequest.Builder().setFullTracking(true).build(), context.mainExecutor, measurements)
+            }
             locationOn = true
         } catch (e: Exception) {
             rt.log.event("sensor", "phone", "location_error", e.javaClass.simpleName)
@@ -245,6 +254,7 @@ class AndroidSensors(private val context: Context, private val rt: VehicleRuntim
         if (!locationOn) return
         runCatching { lm.removeUpdates(locationListener) }
         runCatching { lm.unregisterGnssStatusCallback(gnssCallback) }
+        runCatching { lm.unregisterGnssMeasurementsCallback(measurements) }
         locationOn = false
     }
 

@@ -206,10 +206,19 @@ export function drawPlan(m: TileMap, g: CanvasRenderingContext2D, items: { lat: 
   g.textAlign = 'start'; g.textBaseline = 'alphabetic';
 }
 
-export function drawVehicle(m: TileMap, g: CanvasRenderingContext2D, lat: number, lon: number, headingDeg: number, accM: number) {
+/**
+ * The vehicle where navigation thinks it is, with a circle for how unsure that is. Blue when navigation trusts it,
+ * amber when it doesn't. [raw] is the GPS's own latest fix, drawn as a small grey dot so jumps are visible.
+ */
+export function drawVehicle(m: TileMap, g: CanvasRenderingContext2D, lat: number, lon: number, headingDeg: number, accM: number, trusted = true, raw?: { lat: number; lon: number }) {
+  if (raw) {
+    const r = m.toScreen(raw.lat, raw.lon);
+    g.beginPath(); g.arc(r.x, r.y, 3.5, 0, 7); g.fillStyle = 'rgba(160,160,160,.9)'; g.fill();
+  }
   const p = m.toScreen(lat, lon);
   g.beginPath(); g.arc(p.x, p.y, accM / m.metersPerPixel(), 0, 7);
-  g.fillStyle = 'rgba(88,166,255,.2)'; g.fill();
+  g.fillStyle = trusted ? 'rgba(88,166,255,.2)' : 'rgba(229,168,35,.25)'; g.fill();
+  if (!trusted) { g.lineWidth = 2; g.setLineDash([6, 4]); g.strokeStyle = '#e5a823'; g.stroke(); g.setLineDash([]); }
   g.save(); g.translate(p.x, p.y); g.rotate(headingDeg * Math.PI / 180);
   g.beginPath(); g.moveTo(0, -14); g.lineTo(9, 10); g.lineTo(0, 5); g.lineTo(-9, 10); g.closePath();
   g.fillStyle = '#58a6ff'; g.strokeStyle = '#fff'; g.lineWidth = 2; g.fill(); g.stroke();

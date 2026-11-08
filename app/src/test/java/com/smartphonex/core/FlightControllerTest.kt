@@ -161,13 +161,59 @@ class FlightControllerTest {
         }
     }
 
-    private fun gpsAt(lat: Double, lon: Double, acc: Double = 5.0) = fc.onGps(GpsFix(lat, lon, 100.0, 1.0, 0.0, acc, 8, nowMs), 0.0)
+    /** Puts the vehicle here. A jump to a new place resets the GPS guard, as if it had settled there. */
+    private fun gpsAt(lat: Double, lon: Double, acc: Double = 5.0) {
+        val e = fc.navEstimate()
+        if (e == null || Navigation.distanceM(e.lat, e.lon, lat, lon) > 1.0) fc.gpsGuard.reset()
+        repeat(GpsGuard.SETTLE_FIXES + 1) { fc.onGps(GpsFix(lat, lon, 100.0, 1.0, 0.0, acc, 8, nowMs), 0.0) }
+    }
+
+    @Test fun missionStopsAndWaitsWhenGpsIsTooRoughThenHandsOver() {
+        type = "boat"
+        feed(0.0, 0.0, 0.0, 3.0)
+        val engine = MissionEngine { nowMs }
+        fc.missions = engine
+        engine.load(Mission("m", listOf(MissionItem(28.001, 77.0, radiusM = 5.0))))
+        gpsAt(28.0, 77.0)
+        assertNull(fc.setMode(FlightMode.AUTO))
+        engine.start()
+        val going = fc.process(ActuatorOutput(0.0, 0.0), true, 0.01)
+        assertTrue("drives toward the point: ${going.throttle}", going.throttle > 0.0)
+        // Accuracy collapses: the guard calls it too rough, and the boat stops where it is.
+        repeat(10) { nowMs += 1000; nowNs += 1_000_000_000L; fc.onGyro(nowNs, 0f, 0f, 0f); fc.onGps(GpsFix(28.0, 77.0, 100.0, 0.0, 0.0, 80.0, 4, nowMs), 0.0) }
+        val waiting = fc.process(ActuatorOutput(0.0, 0.0), true, 0.01)
+        assertEquals(0.0, waiting.throttle, 1e-9)
+        assertEquals(FlightMode.AUTO, fc.mode)
+        assertTrue(log.allEvents().any { it.kind == "gps" && it.code == "waiting" })
+        // Still bad after NAV_WAIT_S: paused, and a person decides.
+        repeat(35) { nowMs += 1000; nowNs += 1_000_000_000L; fc.onGyro(nowNs, 0f, 0f, 0f); fc.onGps(GpsFix(28.0, 77.0, 100.0, 0.0, 0.0, 80.0, 4, nowMs), 0.0); fc.process(ActuatorOutput(0.0, 0.0), true, 0.01) }
+        assertEquals(FlightMode.HOLD, fc.mode)
+        assertEquals(MissionEngine.State.PAUSED, engine.state)
+    }
+
+    @Test fun aGpsJumpDoesNotSteerTheMission() {
+        type = "boat"
+        feed(0.0, 0.0, 0.0, 3.0)
+        val engine = MissionEngine { nowMs }
+        fc.missions = engine
+        engine.load(Mission("m", listOf(MissionItem(28.001, 77.0, radiusM = 5.0))))
+        gpsAt(28.0, 77.0)
+        assertNull(fc.setMode(FlightMode.AUTO))
+        engine.start()
+        fc.process(ActuatorOutput(0.0, 0.0), true, 0.01)
+        // One fix 200 m north, beyond the point: ignored, so the mission doesn't think it arrived.
+        nowMs += 1000; nowNs += 1_000_000_000L; fc.onGyro(nowNs, 0f, 0f, 0f)
+        fc.onGps(GpsFix(28.0018, 77.0, 100.0, 0.0, 0.0, 5.0, 8, nowMs), 0.0)
+        fc.process(ActuatorOutput(0.0, 0.0), true, 0.01)
+        assertEquals(0, engine.index)
+        assertTrue(log.allEvents().any { it.kind == "gps" && it.code == "rejected" })
+    }
 
     @Test fun returnHomeRequiresGpsAndHome() {
         feed(0.0, 0.0, 0.0, 3.0)
         assertTrue(fc.setMode(FlightMode.RETURN_HOME)!!.contains("no GPS"))
         gpsAt(28.0, 77.0, acc = 90.0)
-        assertTrue(fc.setMode(FlightMode.RETURN_HOME)!!.contains("accuracy"))
+        assertTrue(fc.setMode(FlightMode.RETURN_HOME)!!.contains("only good to"))
         gpsAt(28.0, 77.0)
         assertTrue(fc.setMode(FlightMode.RETURN_HOME)!!.contains("home"))
         assertNull(fc.setHomeHere())

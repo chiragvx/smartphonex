@@ -41,6 +41,7 @@ and how one adapter drives many servos.
 | `docs/SPEC.md` | The open device format, protocol and plugin interfaces |
 | `docs/USB_HARDWARE.md` | Adapters, wiring, voltages and keeping the phone safe |
 | `docs/PERFORMANCE.md` | Stress test results and what the app does under load |
+| `docs/NAVIGATION_SAFETY.md` | How GPS errors are kept from causing harm, and what's up to you |
 | `docs/PHONES.md` | Which phones work, from shared phone reports |
 | `docs/THREAT_MODEL.md`, `SECURITY.md` | Security design and how to report a problem |
 | `docs/RELEASING.md` | Signing, versions and releases |
