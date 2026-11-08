@@ -200,8 +200,27 @@ class AndroidSensors(private val context: Context, private val rt: VehicleRuntim
         if (loc?.enabled == true) startLocation() else stopLocation()
     }
 
-    /** Only here to ask for full tracking. The raw measurements themselves aren't used yet. */
-    private val measurements = object : android.location.GnssMeasurementsEvent.Callback() {}
+    /**
+     * Asks for full tracking. The raw measurements aren't used for navigation yet; a summary of what this phone
+     * reports (bands, carrier phase, signal strength) goes to logcat every 10 s under the tag SpxGnss.
+     */
+    private var lastGnssSummaryMs = 0L
+    private val measurements = object : android.location.GnssMeasurementsEvent.Callback() {
+        override fun onGnssMeasurementsReceived(event: android.location.GnssMeasurementsEvent) {
+            val now = System.currentTimeMillis()
+            if (now - lastGnssSummaryMs < 10_000) return
+            lastGnssSummaryMs = now
+            val ms = event.measurements
+            val bands = ms.groupingBy { m ->
+                if (!m.hasCarrierFrequencyHz()) "?" else if (m.carrierFrequencyHz < 1.3e9) "L5/E5" else if (m.carrierFrequencyHz < 1.59e9) "B1" else "L1/E1"
+            }.eachCount()
+            val adrValid = ms.count { (it.accumulatedDeltaRangeState and android.location.GnssMeasurement.ADR_STATE_VALID) != 0 }
+            val adrReported = ms.count { it.accumulatedDeltaRangeState != android.location.GnssMeasurement.ADR_STATE_UNKNOWN }
+            val doppler = ms.count { it.pseudorangeRateUncertaintyMetersPerSecond < 1.0 }
+            android.util.Log.i("SpxGnss", "sats=${ms.size} bands=$bands adrValid=$adrValid adrReported=$adrReported " +
+                "dopplerGood=$doppler cn0Max=${ms.maxOfOrNull { it.cn0DbHz }?.toInt()} clockDiscont=${event.clock.hardwareClockDiscontinuityCount}")
+        }
+    }
 
     private val locationListener = object : LocationListener {
         override fun onLocationChanged(l: Location) {
