@@ -147,7 +147,9 @@ export function Horizon({ roll, pitch, heading, stale }: { roll: number; pitch: 
     g.clearRect(0, 0, w, h);
     g.save();
     g.translate(w / 2, h / 2);
-    g.rotate(roll * Math.PI / 180);
+    // Roll is positive right side down. Like a real attitude indicator, the horizon turns the other way, so its
+    // right end rises when the vehicle rolls right. The phone's own horizon (AppUi.kt) does the same.
+    g.rotate(-roll * Math.PI / 180);
     const shift = pitch / 45 * h / 2;
     g.fillStyle = '#3a79b7'; g.fillRect(-w * 2, -h * 2 + shift, w * 4, h * 2);
     g.fillStyle = '#7a5230'; g.fillRect(-w * 2, shift, w * 4, h * 2);
