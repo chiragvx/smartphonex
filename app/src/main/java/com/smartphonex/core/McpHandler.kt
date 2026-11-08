@@ -20,6 +20,10 @@ class McpHandler(private val rt: VehicleRuntime) {
         put("type", "number"); put("description", desc)
     }
 
+    private fun JsonObjectBuilder.boolProp(name: String, desc: String) = putJsonObject(name) {
+        put("type", "boolean"); put("description", desc)
+    }
+
     private fun JsonObjectBuilder.strProp(name: String, desc: String, values: List<String>) = putJsonObject(name) {
         put("type", "string"); put("description", desc)
         putJsonArray("enum") { values.forEach { add(it) } }
@@ -43,6 +47,9 @@ class McpHandler(private val rt: VehicleRuntime) {
         tool("vehicle_set_throttle", "Request open-loop throttle, -1 to 1, within configured limits. Requires AUTO.", schema(listOf("value")) { numProp("value", "Throttle request."); numProp("durationMs", leaseDesc) }),
         tool("vehicle_set_steering", "Request steering, -1 (right) to 1 (left), within configured limits. Requires AUTO.", schema(listOf("value")) { numProp("value", "Steering request."); numProp("durationMs", leaseDesc) }),
         tool("vehicle_stop", "Stop the vehicle now and disarm. Always accepted.", schema()),
+        tool("vehicle_set_face", "Show an expression on the phone's face screen. 'auto' hands it back to the device's own state. Safety states, such as failsafe, always show instead.",
+            schema(listOf("expression")) { strProp("expression", "Expression", Face.REQUESTABLE.map { it.name.lowercase() } + Face.AUTO); numProp("seconds", "How long. Default 4. 0 keeps it until changed") }),
+        tool("vehicle_show_face", "Show or hide the face on the phone's screen. Hiding it shows the phone's controls.", schema(listOf("show")) { boolProp("show", "true to show, false to hide") }),
         tool("vehicle_configure_pid", "Submit speed-controller gains for validation. Omitted values are unchanged.", schema { numProp("kp", "0-5"); numProp("ki", "0-5"); numProp("kd", "0-2"); numProp("ff", "Feed-forward, 0-2") }),
         tool("vehicle_run_mission", "Run an approved mission. Requires AUTO. It finishes by itself; vehicle_stop cancels it.", schema(listOf("name")) { strProp("name", "Mission name", Missions.all.keys.toList()) }),
     )
@@ -107,6 +114,8 @@ class McpHandler(private val rt: VehicleRuntime) {
                 "vehicle_set_throttle" -> command(args, "set_throttle")
                 "vehicle_set_steering" -> command(args, "set_steering")
                 "vehicle_stop" -> command(args, "stop")
+                "vehicle_set_face" -> command(args, "face_express")
+                "vehicle_show_face" -> command(args, "face_show")
                 "vehicle_configure_pid" -> command(args, "configure_pid")
                 "vehicle_run_mission" -> command(args, "run_mission")
                 in rt.setup.toolNames -> {

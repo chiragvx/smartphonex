@@ -1,0 +1,38 @@
+# A relay on your own server, with automatic HTTPS from Let's Encrypt through Caddy.
+# See deploy/README.md. Run from this folder:
+#   DOMAIN=relay.example.com docker compose up -d
+services:
+  relay:
+    build:
+      context: ..
+      dockerfile: relay/Dockerfile
+    image: smartphonex-relay
+    restart: unless-stopped
+    environment:
+      TRUST_PROXY: "1"
+    volumes:
+      - relay-data:/data
+    # Not published: only Caddy reaches it.
+    expose:
+      - "8787"
+
+  caddy:
+    image: caddy:2.8.4-alpine
+    restart: unless-stopped
+    depends_on:
+      - relay
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN to the relay's public name, such as relay.example.com}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  relay-data:
+  caddy-data:
+  caddy-config:

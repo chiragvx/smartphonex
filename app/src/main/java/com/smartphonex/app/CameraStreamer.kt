@@ -229,7 +229,8 @@ class CameraStreamer(private val context: Context, private val rt: VehicleRuntim
         }, handler)
     }
 
-    private fun due(fps: Double): Boolean {
+    private fun due(asked: Double): Boolean {
+        val fps = asked * shed
         val now = System.currentTimeMillis()
         if (now - lastFrameAt < 1000.0 / fps) return false
         // No viewer can take a frame and nobody wants a still: don't spend battery encoding one.
@@ -339,5 +340,9 @@ class CameraStreamer(private val context: Context, private val rt: VehicleRuntim
         thread.quitSafely()
     }
 
-    private companion object { const val TEST_PATTERN = "test" }
+    companion object {
+        private const val TEST_PATTERN = "test"
+        /** Lowered when the phone is hot: half or a quarter of the frames. Set from Android's thermal status. */
+        @Volatile var shed = 1.0
+    }
 }

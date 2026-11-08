@@ -1,5 +1,5 @@
 // Configure it: device, assistant, trim, triggers, settings, sensors, camera.
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import { armed, cmd, getToken, isOperator, raw, S, type Trigger } from './store';
 import { Panel } from './parts';
 
@@ -248,10 +248,86 @@ function Connect() {
   );
 }
 
+function Backup() {
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const q = (media: boolean) => `/backup?token=${encodeURIComponent(getToken())}${media ? '&media=1' : ''}`;
+  const restore = async (f: File | undefined) => {
+    if (!f) return;
+    if (!confirm(`Replace this phone's settings, devices and logs with ${f.name}? What's there now is kept aside on the phone, and the app restarts.`)) return;
+    setBusy(true); setNote('Sending...');
+    try {
+      const res = await fetch('/backup/restore', { method: 'POST', headers: { Authorization: `Bearer ${getToken()}`, 'Content-Type': 'application/zip' }, body: f });
+      const b = await res.json().catch(() => ({}));
+      setNote(res.ok ? 'Restored. The app is restarting and will reconnect.' : `Refused: ${b.error ?? res.status}`);
+    } catch { setNote('Could not reach the phone.'); }
+    setBusy(false);
+  };
+  return (
+    <Panel title="Backup">
+      <p class="dim">Settings, devices, missions and logs in one file. Secrets stay on the phone: its access token, AI key and relay link.</p>
+      <div class="row">
+        <a class="btn" id="backupBtn" href={q(false)} download>Download backup</a>
+        <a class="btn" id="backupMediaBtn" href={q(true)} download>With photos and video</a>
+      </div>
+      {isOperator() && <label class="filebtn">Restore from file
+        <input id="restoreFile" type="file" accept=".zip,application/zip" hidden disabled={busy || armed()} onChange={(e) => restore((e.target as HTMLInputElement).files?.[0])} />
+      </label>}
+      {armed() && <p class="dim">Disarm to restore.</p>}
+      <p class="dim" id="backupNote">{note}</p>
+    </Panel>
+  );
+}
+
+type Health = {
+  exits: { t: number; text: string; unexpected: boolean; detail?: string }[];
+  crashes: { name: string; t: number; summary: string }[];
+  supported: boolean;
+  update?: { enabled: boolean; current: string; latest?: string; newer?: boolean; page?: string; apk?: string; error?: string; checked?: number };
+};
+
+/** How the app has been, a report of this phone for the compatibility table, and updates. On the phone's own address only. */
+function AppHealth() {
+  const [h, setH] = useState<Health | null>(null);
+  const [busy, setBusy] = useState(false);
+  const q = `token=${encodeURIComponent(getToken())}`;
+  const load = () => fetch(`/diagnostics?${q}`).then(r => r.ok ? r.json() : null).then(setH).catch(() => setH(null));
+  useEffect(() => { load(); }, []);
+  const checkNow = async () => {
+    setBusy(true);
+    try { await fetch('/diagnostics/update', { method: 'POST', headers: { Authorization: `Bearer ${getToken()}` } }); } catch { /* Shown as not checked. */ }
+    await load(); setBusy(false);
+  };
+  const when = (t: number) => new Date(t).toLocaleString();
+  const u = h?.update;
+  return (
+    <Panel title="App health">
+      {!h ? <p class="dim">Loading...</p> : <>
+        {u?.enabled && <div class="row" id="updateRow">
+          <span class="grow">{u.newer ? <b>Version {u.latest} is out.</b> : u.error ? <span class="dim">Couldn't check for updates: {u.error}</span> : u.checked ? `Up to date (${u.current})` : 'Not checked yet'}
+            {u.newer && u.page && <> <a href={u.page} target="_blank" rel="noopener noreferrer">Get it</a>. Back up first.</>}</span>
+          <button onClick={checkNow} disabled={busy}>{busy ? 'Checking...' : 'Check now'}</button>
+        </div>}
+        <p class="dim">{h.supported ? 'How the app stopped, most recent first:' : 'This Android version doesn\'t say why the app stopped. Crashes are still recorded.'}</p>
+        <div id="exitList">
+          {h.exits.length === 0 && h.supported && <p class="dim">Nothing recorded yet.</p>}
+          {h.exits.slice(0, 8).map(e => <div class="item" key={e.t}><span class={`pill ${e.unexpected ? 'warn' : 'off'}`}>{e.unexpected ? 'Unexpected' : 'Normal'}</span> <span class="grow">{when(e.t)}: {e.text}</span></div>)}
+        </div>
+        {h.crashes.length > 0 && <>
+          <p><b>Crashes</b></p>
+          {h.crashes.slice(0, 8).map(c => <div class="item" key={c.name}><span class="grow">{when(c.t)}: {c.summary}</span><a class="btn" href={`/diagnostics/crash/${c.name}?${q}`} target="_blank" rel="noopener noreferrer">Open</a></div>)}
+        </>}
+        <p class="dim">The phone report lists this phone's model, sensors, GPS signal and timing, with no location or IDs. Sharing it helps others pick a phone.</p>
+        <a class="btn" id="phoneReport" href={`/diagnostics/phone?${q}`} download>Download phone report</a>
+      </>}
+    </Panel>
+  );
+}
+
 export function Setup() {
   return (
     <div class="pageCols">
-      <div><Device /><Assistant /><Trim /><Connect /></div>
+      <div><Device /><Assistant /><Trim /><Connect />{!S.relay && <Backup />}{!S.relay && <AppHealth />}</div>
       <div><Triggers /><Settings /><Sensors /><Camera /></div>
     </div>
   );

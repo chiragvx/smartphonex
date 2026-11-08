@@ -21,7 +21,7 @@ address changes on every tunnel restart, and the PC must stay on.
 cd relay
 node admin.mjs add-user <you> operator <a-password-you-choose>
 node admin.mjs add-ai-key claude
-set TRUST_PROXY=1
+set TRUST_PROXY=cloudflare
 node server.mjs
 cloudflared tunnel --url http://127.0.0.1:8787
 ```

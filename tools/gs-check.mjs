@@ -225,6 +225,12 @@ await js(`document.querySelector('#paramHistory summary').click(); [...document.
 await sleep(600);
 check('Restore puts it back', String(await js(`document.querySelector('${param}').value`)) === String(before), await js(`document.querySelector('${param}').value`));
 await shot('setup');
+check('Backup offers a download', await has('#backupBtn') && (await js(`document.querySelector('#backupBtn').getAttribute('href')`)).startsWith('/backup?token='));
+check('App health loads', await until(() => has('#phoneReport'), 4000));
+check('App health lists how the app stopped', await until(() => js(`document.querySelectorAll('#exitList .item').length > 0`), 3000));
+await js(`document.querySelector('#phoneReport').scrollIntoView()`);
+await sleep(300);
+await shot('setup-health');
 
 // Plan.
 await page('plan');
@@ -345,7 +351,17 @@ await cdp('Emulation.clearDeviceMetricsOverride');
 await cdp('Page.navigate', { url: `${base}/classic/` });
 await sleep(2500);
 check('The classic page still loads', await js(`!!document.getElementById('link')`));
-await send({ type: 'cmd', seq: Date.now() * 1000, sentAt: Date.now() + (await js('window.__offset ?? 0')), cmd: 'trigger_delete', id: 'test-mark' });
+// Clean up. Commands carry a time on the phone's clock, which can differ from this computer's, so read it from hello first.
+const cleaned = await js(`new Promise(res => {
+  const w = new WebSocket('ws://${host}/ws?token=${token}');
+  w.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'hello') w.send(JSON.stringify({ type: 'cmd', seq: Date.now() * 1000, sentAt: Date.now() + (m.t - Date.now()), cmd: 'trigger_delete', id: 'test-mark' }));
+    if (m.type === 'ack') { w.close(); res(m.accepted); }
+  };
+  setTimeout(() => res(false), 4000);
+})`);
+check('Test trigger cleaned up', cleaned === true);
 
 check('No script errors or blocked requests', problems.length === 0, problems.slice(0, 5).join(' || '));
 console.log(`\n${failed ? `${failed} FAILED` : 'ALL PASSED'} (started on ${startProfile})`);

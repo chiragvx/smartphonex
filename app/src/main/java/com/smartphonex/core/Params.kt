@@ -108,6 +108,11 @@ class ParamStore(private val file: File?, private val vehicle: () -> String) {
             ParamDef("VIS_LINE", "Vision", "Line tracking from the camera: 0 off, 1 dark line, 2 bright line. Needs the camera on. Feeds the sensor vision.line", 0.0, 0.0, 2.0),
             ParamDef("TLM_HZ", "Telemetry", "Flight-state rate on the link, Hz", 20.0, 1.0, 50.0),
             ParamDef("LOG_ALWAYS", "Telemetry", "0 log while armed. 1 log always", 0.0, 0.0, 1.0),
+            ParamDef("FACE_MODE", "Face", "Face on the phone's screen: 0 off, 1 after the screen is left alone, 2 robot (the face is the main screen)", 0.0, 0.0, 2.0),
+            ParamDef("FACE_IDLE_S", "Face", "Seconds untouched before the face comes up. Robot mode uses at most 10", 60.0, 5.0, 3600.0),
+            ParamDef("FACE_STYLE", "Face", "0 eyes, 1 eyes and mouth, 2 visor", 0.0, 0.0, 2.0),
+            ParamDef("FACE_HUE", "Face", "Colour of the face, as a hue from 0 to 360. 190 is cyan", 190.0, 0.0, 360.0),
+            ParamDef("FACE_BRIGHT", "Face", "Screen brightness while the face shows, 0.05 to 1", 0.6, 0.05, 1.0),
         )
         val BY_NAME = ALL.associateBy { it.name }
     }

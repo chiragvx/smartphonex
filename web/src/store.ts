@@ -17,6 +17,7 @@ export type Ops = {
   report?: Report; checklist: { item: string; done: boolean }[];
   trims: Record<string, { trim: number; reverse: boolean; lo: number; hi: number }>;
   connections: Check[];
+  face?: { shown: boolean; mode: string; requested: string | null; held: boolean; blocked?: string };
 };
 export type Report = { t: number; device: string; name: string; passed: boolean; results: { test: string; status: string; detail: string }[] };
 export type LogEvent = { id?: number; t: number; kind: string; source: string; code: string; message: string };

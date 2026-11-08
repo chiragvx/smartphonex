@@ -13,10 +13,12 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
     <application android:label="SmartPhoneX" android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:networkSecurityConfig="@xml/network_security_config"
         android:icon="@android:drawable/ic_menu_compass">
         <activity android:name=".MainActivity" android:exported="true"
@@ -32,6 +34,11 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="smartphonex" android:host="enroll" />
             </intent-filter>
+            <!-- Plugging in a USB-UART adapter offers this app, and "use by default" keeps the permission. -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" android:resource="@xml/usb_device_filter" />
         </activity>
         <service android:name=".VehicleService" android:exported="false"
             android:foregroundServiceType="specialUse|camera|location">

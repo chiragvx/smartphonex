@@ -178,8 +178,18 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onResume() { super.onResume(); handler.post(refresh) }
+    /** False while the app is out of sight, so the screen stops rebuilding what nobody sees. */
+    val visible = androidx.compose.runtime.mutableStateOf(true)
+    override fun onStart() { super.onStart(); visible.value = true }
+    override fun onStop() { super.onStop(); visible.value = false }
     override fun onPause() { super.onPause(); handler.removeCallbacks(refresh); drivingAllowed.value = false }
 
     /** Leaving the app ends driving from the screen, as nothing is holding the sticks. */
     val drivingAllowed = androidx.compose.runtime.mutableStateOf(false)
+
+    /** When someone last touched the screen or pressed a key or stick. The face waits for quiet. */
+    @Volatile var lastInput = android.os.SystemClock.uptimeMillis()
+    // Android calls this for every touch and key press.
+    override fun onUserInteraction() { super.onUserInteraction(); lastInput = android.os.SystemClock.uptimeMillis() }
+    override fun dispatchGenericMotionEvent(ev: MotionEvent): Boolean { lastInput = android.os.SystemClock.uptimeMillis(); return super.dispatchGenericMotionEvent(ev) }
 }

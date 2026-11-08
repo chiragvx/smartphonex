@@ -4,6 +4,8 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.hardware.usb.UsbManager
+import com.hoho.android.usbserial.driver.Cp21xxSerialDriver
+import com.hoho.android.usbserial.driver.FtdiSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
 import com.hoho.android.usbserial.util.SerialInputOutputManager
@@ -20,14 +22,31 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 
-/** USB-UART adapters, through the widely used usb-serial library. Not yet tried with a real adapter. */
+/**
+ * USB-UART adapters, through the usb-serial-for-android library. Not yet tried with a real adapter.
+ * Phone USB-C, OTG adapter or cable, USB-UART adapter, then its TX, RX and ground pins to the device.
+ */
 class AndroidTransports(private val context: Context) : TransportProvider {
     private val usb = context.getSystemService(UsbManager::class.java)
     private val inUse = HashSet<String>()
+    @Volatile var lastPermission: String? = null; private set
+
+    init {
+        // The answer to a permission request. The next write retries by itself once it's allowed.
+        val filter = android.content.IntentFilter(PERMISSION)
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: Context, i: Intent) {
+                lastPermission = if (i.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) "allowed" else "refused"
+            }
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 33) context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        else @Suppress("UnspecifiedRegisterReceiverFlag") context.registerReceiver(receiver, filter)
+    }
 
     override fun list(): List<String> = UsbSerialProber.getDefaultProber().findAllDrivers(usb).map {
         val d = it.device
-        "${d.productName ?: "USB serial"} (vendor ${"%04x".format(d.vendorId)}, product ${"%04x".format(d.productId)}, ${it.javaClass.simpleName})"
+        val note = if (it is Cp21xxSerialDriver) ", an original CP2102 can't do 420000 or 100000 baud: use FTDI or CP2102N for CRSF and SBUS" else ""
+        "${d.productName ?: "USB serial"} (vendor ${"%04x".format(d.vendorId)}, product ${"%04x".format(d.productId)}, ${it.javaClass.simpleName}$note)"
     }
 
     override fun open(def: TransportDef): Transport {
@@ -39,10 +58,14 @@ class AndroidTransports(private val context: Context) : TransportProvider {
             // With a hub, adapters are taken in order, unless the description names one by its port number.
             val driver = def.port?.let { drivers.getOrNull(it) } ?: drivers.firstOrNull { it.device.deviceName !in inUse }
                 ?: throw IOException("all USB serial adapters are in use")
+            // Only FTDI chips can invert the line themselves (set once with FT_PROG). Others need an inverter.
+            if (def.inverted && driver !is FtdiSerialDriver) throw IOException("an inverted line (SBUS) needs an FTDI adapter set to invert with FT_PROG, or a hardware inverter")
             if (!usb.hasPermission(driver.device)) {
-                val pi = PendingIntent.getBroadcast(context, 0, Intent("com.smartphonex.USB_PERMISSION").setPackage(context.packageName), PendingIntent.FLAG_IMMUTABLE)
+                // Mutable, so Android can fill in whether it was allowed. Explicit, so only this app receives it.
+                val flags = if (android.os.Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
+                val pi = PendingIntent.getBroadcast(context, 0, Intent(PERMISSION).setPackage(context.packageName), flags)
                 usb.requestPermission(driver.device, pi)
-                throw IOException("allow USB access on the phone, then try again")
+                throw IOException("allow USB access on the phone. Tick \"use by default\" so it isn't asked again")
             }
             val connection = usb.openDevice(driver.device) ?: throw IOException("couldn't open the USB adapter")
             val port = driver.ports[0]
@@ -50,15 +73,30 @@ class AndroidTransports(private val context: Context) : TransportProvider {
             inUse += name
             object : Transport {
                 private var io: SerialInputOutputManager? = null
+                @Volatile private var failure: Exception? = null
                 override fun open(onBytes: (ByteArray) -> Unit) {
-                    port.open(connection)
-                    port.setParameters(def.baud, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
+                    try {
+                        port.open(connection)
+                        val parity = when (def.parity) { "even" -> UsbSerialPort.PARITY_EVEN; "odd" -> UsbSerialPort.PARITY_ODD; else -> UsbSerialPort.PARITY_NONE }
+                        val stop = if (def.stopBits == 2) UsbSerialPort.STOPBITS_2 else UsbSerialPort.STOPBITS_1
+                        port.setParameters(def.baud, def.dataBits, stop, parity)
+                        // FTDI holds received bytes for up to 16 ms by default. Servo replies and telemetry want them now.
+                        if (port is FtdiSerialDriver.FtdiSerialPort) runCatching { port.setLatencyTimer(1) }
+                    } catch (e: UnsupportedOperationException) {
+                        close(); throw IOException("this adapter can't do ${def.baud} baud ${def.dataBits}${def.parity.first().uppercaseChar()}${def.stopBits}: ${e.message}")
+                    } catch (e: IOException) {
+                        close(); throw e
+                    }
                     io = SerialInputOutputManager(port, object : SerialInputOutputManager.Listener {
                         override fun onNewData(data: ByteArray) = onBytes(data)
-                        override fun onRunError(e: Exception) {}
+                        // Unplugged or failed: remember it, so the next write fails and the output shows the error.
+                        override fun onRunError(e: Exception) { failure = e }
                     }).also { it.start() }
                 }
-                override fun write(data: ByteArray) = port.write(data, WRITE_TIMEOUT_MS)
+                override fun write(data: ByteArray) {
+                    failure?.let { throw IOException("the USB adapter stopped: ${it.message ?: it.javaClass.simpleName}") }
+                    port.write(data, WRITE_TIMEOUT_MS)
+                }
                 override fun close() {
                     runCatching { io?.stop() }
                     runCatching { port.close() }
@@ -68,7 +106,10 @@ class AndroidTransports(private val context: Context) : TransportProvider {
         }
     }
 
-    private companion object { const val WRITE_TIMEOUT_MS = 50 }
+    private companion object {
+        const val WRITE_TIMEOUT_MS = 50
+        const val PERMISSION = "com.smartphonex.USB_PERMISSION"
+    }
 }
 
 /**

@@ -229,6 +229,13 @@ class FlightControllerTest {
         assertNull(fc.armProblem())
     }
 
+    @Test fun deviceWithoutBatteryCanArm() {
+        fc.onDeviceState(null, 0)
+        assertNull(fc.armProblem())
+        assertEquals("none", fc.healthMap()["battery"])
+        assertEquals("No battery: mains power", fc.batteryText())
+    }
+
     @Test fun linkLossPolicyByVehicle() {
         for ((t, expectHome) in listOf("plane" to true, "boat" to true, "car" to false)) {
             type = t

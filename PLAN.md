@@ -100,6 +100,7 @@ Relay hosting is temporary: this PC plus a `cloudflared` tunnel. A permanent hos
 - Flight controller: see `FLIGHT_CONTROLLER.md`.
 - Any robotic device, set up with any LLM: see `ANY_DEVICE.md`.
 - Universal ground station: Phase 1 built, walk test outstanding. See `GROUND_STATION.md`, section 14.
+- Phases from here to 1.0, including customization: see `ROADMAP.md`.
 
 ## Saved for later
 

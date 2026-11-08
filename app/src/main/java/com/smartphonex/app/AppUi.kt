@@ -53,6 +53,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 import java.net.Inet4Address
 import java.net.NetworkInterface
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 private val Good = Color(0xFF3DBE6B)
@@ -67,6 +68,17 @@ private fun Context.say(r: CommandResult, ok: String? = null) {
 }
 
 private fun VehicleRuntime.ask(name: String, body: JsonObjectBuilder.() -> Unit = {}) = local(Command.OpsRequest(name, buildJsonObject(body)))
+
+private fun VehicleRuntime.param(name: String) = params.get(name, profiles.active.vehicleType)
+
+/** Changes a setting from the phone's screen, with the same checks and history as the ground station. */
+private fun VehicleRuntime.setParam(name: String, value: Double): String? {
+    val before = runCatching { param(name) }.getOrNull()
+    return params.set(name, value).also {
+        if (it == null) log.event("param", "PHONE", name, "set to $value")
+        if (it == null && before != null && before != value) ops.recordParam(name, before, value)
+    }
+}
 
 private fun statusColor(s: String) = when (s) {
     "ok", "pass" -> Good
@@ -126,10 +138,11 @@ fun SmartPhoneXApp(activity: MainActivity) {
     MaterialTheme(colorScheme = scheme) {
         Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
             var rt by remember { mutableStateOf<VehicleRuntime?>(null) }
-            LaunchedEffect(Unit) { while (rt == null) { rt = VehicleService.runtime; delay(100) } }
+            // Follows the service's runtime, which is rebuilt after a restore.
+            LaunchedEffect(Unit) { while (true) { VehicleService.runtime.let { if (it !== rt) rt = it }; delay(if (rt == null) 100 else 500) } }
             val r = rt
             if (r == null) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Starting...") }
-            else Root(activity, r, contrast) { contrast = it; prefs.edit().putBoolean("contrast", it).apply() }
+            else key(r) { Root(activity, r, contrast) { contrast = it; prefs.edit().putBoolean("contrast", it).apply() } }
         }
     }
 }
@@ -138,12 +151,14 @@ fun SmartPhoneXApp(activity: MainActivity) {
 private fun Root(activity: MainActivity, rt: VehicleRuntime, contrast: Boolean, setContrast: (Boolean) -> Unit) {
     val prefs = remember { activity.getSharedPreferences("app", Context.MODE_PRIVATE) }
     var frame by remember { mutableStateOf(Frame(rt, Slow(rt))) }
-    LaunchedEffect(rt) {
+    // Five times a second is plenty for people to read, and halves the drawing work. Nothing is rebuilt while out of sight.
+    val visible by activity.visible
+    LaunchedEffect(rt, visible) {
         var n = 0
         var slow = frame.slow
-        while (isActive) {
-            delay(100)
-            if (++n % 5 == 0) slow = Slow(rt)
+        while (isActive && visible) {
+            delay(200)
+            if (++n % 3 == 0) slow = Slow(rt)
             frame = Frame(rt, slow)
         }
     }
@@ -162,8 +177,46 @@ private fun Root(activity: MainActivity, rt: VehicleRuntime, contrast: Boolean, 
     var locked by remember { mutableStateOf(false) }
     var web by remember { mutableStateOf<String?>(null) }
     var guide by remember { mutableStateOf(!prefs.getBoolean("guided", false)) }
+    var faceShown by remember { mutableStateOf(false) }
     val f = frame
-    Column(Modifier.fillMaxSize().systemBarsPadding()) {
+    // The face comes up after the screen is left alone, or when someone asks it to show an expression. Never while
+    // driving from this screen or running an output test, which need the controls in view.
+    val faceMode = Face.mode(rt.param("FACE_MODE"))
+    val busy = driving || f.test != null || locked || guide
+    // A ground station or AI can show or hide it too, even with the face set to off. Only commands newer than this screen count.
+    var faceCmdSeen by remember { mutableStateOf(rt.ops.faceCommand?.second) }
+    LaunchedEffect(faceMode, busy) {
+        if (busy) faceShown = false
+        while (isActive) {
+            val quiet = (android.os.SystemClock.uptimeMillis() - activity.lastInput) / 1000.0
+            val c = rt.ops.faceCommand
+            if (c != null && c.second != faceCmdSeen) {
+                faceCmdSeen = c.second
+                if (!busy) faceShown = c.first
+                // Hidden by request: start the idle wait again, so it doesn't pop straight back up.
+                if (!c.first) activity.lastInput = android.os.SystemClock.uptimeMillis()
+            } else if (!busy && faceMode != Face.Mode.OFF && !faceShown) {
+                val asked = rt.ops.faceRequest?.let { it.second > System.currentTimeMillis() } == true
+                if (quiet >= Face.idleSeconds(faceMode, rt.param("FACE_IDLE_S")) || (asked && quiet >= 3)) faceShown = true
+            }
+            val req = rt.ops.faceRequest?.takeIf { it.second > System.currentTimeMillis() }
+            rt.ops.faceStatus = buildJsonObject {
+                put("shown", faceShown)
+                put("mode", faceMode.name.lowercase())
+                put("requested", req?.first?.name?.lowercase())
+                put("held", req?.second == Long.MAX_VALUE)
+                when {
+                    driving -> put("blocked", "driving from the phone's screen")
+                    f.test != null -> put("blocked", "an output test is running")
+                    locked -> put("blocked", "touch is locked")
+                    guide -> put("blocked", "the first-run guide is open")
+                }
+            }
+            delay(300)
+        }
+    }
+    // While the face shows, it's all that's drawn: the controls underneath aren't rebuilt.
+    if (!faceShown) Column(Modifier.fillMaxSize().systemBarsPadding()) {
         TopBar(rt, f)
         Box(Modifier.weight(1f).fillMaxWidth()) {
             val page = web
@@ -176,7 +229,7 @@ private fun Root(activity: MainActivity, rt: VehicleRuntime, contrast: Boolean, 
                         1 -> ConnectedTab(rt, f)
                         2 -> TrimTab(rt, f)
                         3 -> TestTab(rt, f)
-                        else -> MoreTab(activity, rt, f, contrast, setContrast, { locked = true }, { web = it }, { guide = true })
+                        else -> MoreTab(activity, rt, f, contrast, setContrast, { locked = true }, { web = it }, { guide = true }, { faceShown = true })
                     }
                 }
             }
@@ -195,6 +248,15 @@ private fun Root(activity: MainActivity, rt: VehicleRuntime, contrast: Boolean, 
     }
     if (locked) TouchLock { locked = false }
     if (guide) FirstRunGuide { guide = false; prefs.edit().putBoolean("guided", true).apply() }
+    if (faceShown) {
+        val quiet = (android.os.SystemClock.uptimeMillis() - activity.lastInput) / 1000.0
+        val look = Face.look(Face.Input(
+            f.killed, f.t.mode, f.t.failsafeReason, f.t.steering, f.t.throttle, f.mission.state == MissionEngine.State.RUNNING,
+            rt.ops.faceRequest, System.currentTimeMillis(), quiet, f.slow?.health?.get("battery") == "bad", f.slow?.health?.get("heat") == "bad",
+        ))
+        FaceScreen(activity, look, rt.param("FACE_STYLE").toInt(), rt.param("FACE_HUE").toFloat(), rt.param("FACE_BRIGHT").toFloat(),
+            onWake = { faceShown = false })
+    }
 }
 
 @Composable
@@ -707,7 +769,7 @@ private fun RunWhileHeld(label: String, modifier: Modifier, rt: VehicleRuntime, 
 // --- More.
 
 @Composable
-private fun MoreTab(activity: MainActivity, rt: VehicleRuntime, f: Frame, contrast: Boolean, setContrast: (Boolean) -> Unit, lock: () -> Unit, openWeb: (String) -> Unit, guide: () -> Unit) {
+private fun MoreTab(activity: MainActivity, rt: VehicleRuntime, f: Frame, contrast: Boolean, setContrast: (Boolean) -> Unit, lock: () -> Unit, openWeb: (String) -> Unit, guide: () -> Unit, showFace: () -> Unit) {
     Card("Device") {
         Text(f.profile.name + if (rt.controller.currentAdapter is SimulatedCar) " (simulator)" else "")
         Button(onClick = { activity.chooseVehicle() }, modifier = Modifier.fillMaxWidth()) { Text("Choose device") }
@@ -722,12 +784,20 @@ private fun MoreTab(activity: MainActivity, rt: VehicleRuntime, f: Frame, contra
     }
     Card("In the field") {
         Button(onClick = lock, modifier = Modifier.fillMaxWidth()) { Text("Lock touch") }
+        if (!Priority.ignoringBatteryLimits(activity)) {
+            Text("Android may pause or stop the app to save battery, which would cut control.", fontSize = 13.sp, color = Warn)
+            OutlinedButton(onClick = { Priority.requestNoBatteryLimits(activity) }, modifier = Modifier.fillMaxWidth()) { Text("Let it run in the background") }
+        }
+        if (Priority.isXiaomi()) OutlinedButton(onClick = {
+            if (!Priority.openXiaomiAutostart(activity)) Toast.makeText(activity, "Open Settings, Apps, SmartPhoneX, and turn on Autostart", Toast.LENGTH_LONG).show()
+        }, modifier = Modifier.fillMaxWidth()) { Text("Xiaomi: turn on Autostart") }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("High contrast for sunlight", modifier = Modifier.weight(1f))
             Switch(checked = contrast, onCheckedChange = setContrast)
         }
         TextButton(onClick = guide) { Text("Show the guide again") }
     }
+    FaceCard(rt, showFace)
     CameraCard(rt)
     Card("Sensors") {
         rt.sensors.catalog().forEach { (info, cfg) ->
@@ -741,6 +811,41 @@ private fun MoreTab(activity: MainActivity, rt: VehicleRuntime, f: Frame, contra
         }
     }
     Text("Build ${BuildConfigInfo.version(activity)}", fontSize = 12.sp)
+}
+
+@Composable
+private fun Choice(options: List<String>, selected: Int, pick: (Int) -> Unit) = Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+    options.forEachIndexed { i, name ->
+        if (i == selected) Button(onClick = { pick(i) }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(2.dp)) { Text(name, fontSize = 13.sp) }
+        else OutlinedButton(onClick = { pick(i) }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(2.dp)) { Text(name, fontSize = 13.sp) }
+    }
+}
+
+@Composable
+private fun FaceCard(rt: VehicleRuntime, showFace: () -> Unit) {
+    val ctx = LocalContext.current
+    // Read on every frame, so a change from the ground station shows here too.
+    val mode = rt.param("FACE_MODE").toInt()
+    val style = rt.param("FACE_STYLE").toInt()
+    val hue = rt.param("FACE_HUE")
+    fun set(name: String, v: Double) { rt.setParam(name, v)?.let { Toast.makeText(ctx, it, Toast.LENGTH_LONG).show() } }
+    Card("Face") {
+        Text("A face on this screen, for robots. It shows how the device is doing. Tap it to get the controls and STOP back.", fontSize = 13.sp)
+        Choice(listOf("Off", "When idle", "Robot"), mode) { set("FACE_MODE", it.toDouble()) }
+        if (mode == 1) Text("Comes up after ${rt.param("FACE_IDLE_S").toInt()} s untouched. Change it in Setup, Settings, Face.", fontSize = 12.sp)
+        if (mode == 2) Text("The face is the main screen. It comes back a few seconds after you use the controls.", fontSize = 12.sp)
+        Choice(listOf("Eyes", "Eyes and mouth", "Visor"), style) { set("FACE_STYLE", it.toDouble()) }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            // Red is kept for alarms.
+            listOf(190.0, 140.0, 45.0, 280.0, 215.0).forEach { h ->
+                Box(Modifier.size(36.dp).clip(CircleShape).background(Color.hsv(h.toFloat(), 0.75f, 1f))
+                    .border(if (abs(h - hue) < 1) 3.dp else 0.dp, MaterialTheme.colorScheme.onSurface, CircleShape)
+                    .clickable { set("FACE_HUE", h) })
+            }
+            Spacer(Modifier.weight(1f))
+            OutlinedButton(onClick = showFace) { Text("Show now") }
+        }
+    }
 }
 
 @Composable
@@ -763,10 +868,8 @@ private fun CameraCard(rt: VehicleRuntime) {
 }
 
 private object BuildConfigInfo {
-    fun version(c: Context): String = runCatching {
-        val p = c.packageManager.getPackageInfo(c.packageName, 0)
-        "${p.versionName} (${p.longVersionCode})"
-    }.getOrDefault("?")
+    @Suppress("UNUSED_PARAMETER")
+    fun version(c: Context): String = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})" + if (BuildConfig.DEBUG) ", debug" else ""
 }
 
 /** The web ground station, inside the app. The native STOP stays on screen above it. */

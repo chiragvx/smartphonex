@@ -314,6 +314,14 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
     private val photoDir = File(dir, "photos")
     val videoDir = File(dir, "video")
     @Volatile var lastDiag: JsonObject? = null; private set
+    /** An expression someone asked the face to show, and until when. Read by the phone app. */
+    @Volatile var faceRequest: Pair<Face.Expr, Long>? = null
+    /** Show (true) or hide the face, from a ground station or AI, and when it was asked. The phone app acts on it. */
+    @Volatile var faceCommand: Pair<Boolean, Long>? = null
+    /** What the face is doing now, reported by the phone app for the ground station. */
+    @Volatile var faceStatus: JsonObject? = null
+    /** Extra rows for Connected from the Android side: app health and updates. */
+    @Volatile var appChecks: List<() -> Check?> = emptyList()
     @Volatile var diagRunning: String? = null; private set
     private val clientTests = HashMap<String, Pair<String, String>>()
     private val reportsDir = File(dir, "tests")
@@ -481,6 +489,17 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
             "test_record" -> {
                 val t = a.s("test") ?: return no("malformed", "test is required")
                 synchronized(clientTests) { clientTests[t.take(30)] = (a.s("status") ?: "warn") to (a.s("detail")?.take(200) ?: "") }
+                CommandResult.OK
+            }
+            "face_express" -> {
+                val (req, why) = Face.parseRequest(a.s("expression"), a.d("seconds"), System.currentTimeMillis())
+                if (req == null) return no("malformed", why ?: "bad expression")
+                faceRequest = req.expr?.let { it to req.untilMs }
+                CommandResult.OK
+            }
+            "face_show" -> {
+                val show = a.b("show") ?: return no("malformed", "show must be true or false")
+                faceCommand = show to System.nanoTime()
                 CommandResult.OK
             }
             "checklist_set" -> {
@@ -879,6 +898,7 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         val net = (rt.net["radio"] as? JsonPrimitive)?.contentOrNull?.ifEmpty { null } ?: (rt.net["transport"] as? JsonPrimitive)?.contentOrNull ?: "unknown"
         out += Check("network", "Network", if (net == "none") "bad" else "ok", net)
         out += Check("power", "Power", if (rt.fc.healthMap()["battery"] == "bad" || rt.fc.healthMap()["heat"] == "bad") "warn" else "ok", rt.fc.batteryText())
+        appChecks.forEach { it()?.let { c -> out += c } }
         return out
     }
 
@@ -891,6 +911,7 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         put("caps", capsJson())
         put("owner", rt.controller.inputOwner?.name)
         put("killed", rt.controller.killed)
+        faceStatus?.let { put("face", it) }
         put("readiness", checksJson(readiness()))
         put("armProblem", armProblem())
         tester.status()?.let { put("test", it) }
@@ -932,6 +953,6 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         const val WEAK_SIGNAL = 30.0
         const val MAX_PHOTOS = 500
         const val MAX_LOG_ROWS = 20_000
-        val AI_ALLOWED = setOf("trigger_fire", "mission_upload", "mission_pause", "mission_abort")
+        val AI_ALLOWED = setOf("trigger_fire", "mission_upload", "mission_pause", "mission_abort", "face_express", "face_show")
     }
 }

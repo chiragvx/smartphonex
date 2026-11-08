@@ -51,6 +51,7 @@ class ControlLoop(
 
     private fun run() {
         val period = 1_000_000_000L / hz
+        val report = runCatching { Realtime.enter("control-loop", period) }.getOrNull()
         var last = System.nanoTime()
         var next = last + period
         var count = 0
@@ -81,6 +82,7 @@ class ControlLoop(
             val t = controller.tick(dtMs / 1000.0)
             onTick(t)
             if (++sampleEvery >= hz / 10) { sampleEvery = 0; onSample(t) }
+            report?.let { r -> (System.nanoTime() - nowN).takeIf { it > 0 }?.let { runCatching { r(it) } } }
         }
     }
 }
@@ -92,7 +94,7 @@ interface AssistantPort {
     fun onMessage(o: JsonObject, send: (String) -> Unit)
 }
 
-class VehicleRuntime(dir: File) {
+class VehicleRuntime(val dir: File) {
     val log = EventLog()
     private val simulator = SimulatedCar(System.nanoTime())
     private val preview = OutputPreview()

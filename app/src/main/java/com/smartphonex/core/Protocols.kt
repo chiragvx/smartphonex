@@ -1,6 +1,14 @@
 package com.smartphonex.core
 
 /** Moves bytes. USB-UART lives in the Android layer, and anything else can be added behind this. */
+/**
+ * Set by the Android layer. A time-critical thread calls [enter] when it starts: Android raises its priority and may
+ * return a function to report each cycle's work time to, so the system can keep the right cores and clock speed for it.
+ */
+object Realtime {
+    @Volatile var enter: (name: String, periodNs: Long) -> ((workNs: Long) -> Unit)? = { _, _ -> null }
+}
+
 interface Transport {
     fun open(onBytes: (ByteArray) -> Unit)
     fun write(data: ByteArray)

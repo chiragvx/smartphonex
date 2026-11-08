@@ -21,6 +21,9 @@ class GroundServer(
     private val relay: RelayClient,
     private val camera: CameraStreamer,
     private val readAsset: (String) -> ByteArray?,
+    private val restart: () -> Unit = {},
+    private val diagnostics: Diagnostics? = null,
+    private val updates: Updates? = null,
     private val port: Int = 8080,
 ) {
     private val sessions = ConcurrentHashMap.newKeySet<DefaultWebSocketServerSession>()
@@ -49,6 +52,12 @@ class GroundServer(
                 get("/api/tools") { apiList(call) }
                 post("/api/tools/{name}") { apiCall(call) }
                 get("/export/pack/{id}") { exportPack(call) }
+                get("/backup") { backup(call) }
+                get("/diagnostics") { diagnosticsJson(call) }
+                get("/diagnostics/phone") { phoneReport(call) }
+                get("/diagnostics/crash/{name}") { crash(call) }
+                post("/diagnostics/update") { updateCheck(call) }
+                post("/backup/restore") { restore(call) }
                 post("/pair") { pair(call) }
                 get("/pair/code") { pairCode(call) }
                 post("/relay/config") { relayConfig(call) }
@@ -127,6 +136,73 @@ class GroundServer(
         if (!authorized(call.request.queryParameters["token"])) return call.respond(HttpStatusCode.Unauthorized)
         val d = rt.devices.get(call.parameters["id"] ?: "") ?: return call.respond(HttpStatusCode.NotFound)
         call.respondText(DeviceSchema.toJson(d).toString(), ContentType.Application.Json)
+    }
+
+    /** How the app has been: exits, crashes, and the update check. */
+    private suspend fun diagnosticsJson(call: ApplicationCall) {
+        if (!authorized(call.request.queryParameters["token"])) return call.respond(HttpStatusCode.Unauthorized)
+        val d = diagnostics ?: return call.respond(HttpStatusCode.NotFound)
+        call.respondText(buildJsonObject {
+            d.json().forEach { (k, v) -> put(k, v) }
+            updates?.let { put("update", it.json()) }
+        }.toString(), ContentType.Application.Json)
+    }
+
+    /** What this phone can do, as a file to share for the compatibility table. */
+    private suspend fun phoneReport(call: ApplicationCall) {
+        if (!authorized(call.request.queryParameters["token"])) return call.respond(HttpStatusCode.Unauthorized)
+        val d = diagnostics ?: return call.respond(HttpStatusCode.NotFound)
+        val model = android.os.Build.MODEL.replace(Regex("[^A-Za-z0-9]+"), "-").trim('-').take(40)
+        call.response.header(HttpHeaders.ContentDisposition, "attachment; filename=\"phone-report-$model.json\"")
+        call.respondText(Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), d.phoneReport()), ContentType.Application.Json)
+    }
+
+    private suspend fun crash(call: ApplicationCall) {
+        if (!authorized(call.request.queryParameters["token"])) return call.respond(HttpStatusCode.Unauthorized)
+        val text = diagnostics?.crashText(call.parameters["name"] ?: "") ?: return call.respond(HttpStatusCode.NotFound)
+        call.respondText(text, ContentType.Text.Plain)
+    }
+
+    private suspend fun updateCheck(call: ApplicationCall) {
+        if (!authorized(bearer(call))) return call.respond(HttpStatusCode.Unauthorized)
+        val u = updates ?: return call.respond(HttpStatusCode.NotFound)
+        val out = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { u.check() }
+        call.respondText(out.toString(), ContentType.Application.Json)
+    }
+
+    /** Everything the app has saved, apart from secrets, as one zip. Media only with ?media=1. */
+    private suspend fun backup(call: ApplicationCall) {
+        if (!authorized(call.request.queryParameters["token"])) return call.respond(HttpStatusCode.Unauthorized)
+        val media = call.request.queryParameters["media"] == "1"
+        val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.US).format(java.util.Date())
+        call.response.header(HttpHeaders.ContentDisposition, "attachment; filename=\"smartphonex-$stamp${if (media) "-media" else ""}.zip\"")
+        rt.log.event("app", "backup", "ok", if (media) "with media" else "settings and logs")
+        call.respondOutputStream(ContentType.Application.Zip) { AppData.backup(rt.dir, this, BuildConfig.VERSION_NAME, media) }
+    }
+
+    /**
+     * Restores a backup made by [backup]. It's checked and unpacked beside the live files, then swapped in by a restart
+     * of the app's service. Refused while armed. This phone keeps its own token, AI key and relay link.
+     */
+    private suspend fun restore(call: ApplicationCall) {
+        if (!authorized(bearer(call))) return call.respond(HttpStatusCode.Unauthorized)
+        fun no(why: String) = buildJsonObject { put("ok", false); put("error", why) }
+        val t = rt.controller.latest()
+        if (t.mode == Mode.MANUAL || t.mode == Mode.AUTO) return call.respondText(no("disarm first").toString(), ContentType.Application.Json, HttpStatusCode.Conflict)
+        val size = call.request.headers[HttpHeaders.ContentLength]?.toLongOrNull()
+        val free = rt.dir.usableSpace
+        // Unpacked size isn't known yet. Allow for the zip plus its contents, with room to spare.
+        if (size != null && size * 3 > free) return call.respondText(no("not enough free space on the phone").toString(), ContentType.Application.Json, HttpStatusCode.InsufficientStorage)
+        val why = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            call.receiveStream().use { AppData.stage(rt.dir, it) }
+        }
+        if (why != null) {
+            rt.log.event("app", "restore", "refused", why)
+            return call.respondText(no(why).toString(), ContentType.Application.Json, HttpStatusCode.BadRequest)
+        }
+        rt.log.event("app", "restore", "ok", "staged; restarting to apply")
+        call.respondText(buildJsonObject { put("ok", true); put("restarting", true) }.toString(), ContentType.Application.Json)
+        restart()
     }
 
     private suspend fun pair(call: ApplicationCall) {

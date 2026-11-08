@@ -144,6 +144,53 @@ function TriggersPanel() {
   );
 }
 
+const EXPRESSIONS = ['happy', 'excited', 'sad', 'angry', 'surprised', 'scared', 'confused', 'curious', 'sleepy', 'wink', 'love', 'neutral'];
+const FACE_HUES: [number, string][] = [[190, 'Cyan'], [140, 'Green'], [45, 'Amber'], [280, 'Purple'], [215, 'Blue']];
+
+/** The phone's face: show or hide it, set an expression, and change how it looks. */
+function FacePanel() {
+  const [hold, setHold] = useState<number>(5);
+  const face = S.ops?.face;
+  if (!isOperator() || !face) return null;
+  const param = (n: string) => S.params.find(p => p.name === n)?.value;
+  const set = (name: string, value: number) => raw({ type: 'param_set', name, value });
+  const mode = param('FACE_MODE') ?? 0;
+  const style = param('FACE_STYLE') ?? 0;
+  const hue = param('FACE_HUE') ?? 190;
+  const status = face.blocked ? `Can't show: ${face.blocked}` : face.shown ? `Showing${face.requested ? `: ${face.requested}${face.held ? ', held' : ''}` : ''}` : 'Hidden';
+  return (
+    <Panel title="Face" right={<span id="faceStatus" class={`pill ${face.blocked ? 'warn' : face.shown ? 'good' : 'off'}`}>{status}</span>}>
+      <div class="row">
+        <button id="faceShow" onClick={() => cmd('face_show', { show: true }, { label: 'Show face' })}>Show</button>
+        <button id="faceHide" onClick={() => cmd('face_show', { show: false }, { label: 'Hide face' })}>Hide</button>
+        <button id="faceAuto" class={face.requested ? '' : 'sel'} onClick={() => cmd('face_express', { expression: 'auto' }, { label: 'Automatic face' })} title="The face follows the device: alert when armed, looking where it turns, alarmed in failsafe">Automatic</button>
+      </div>
+      <div class="chips" id="faceExpressions">
+        {EXPRESSIONS.map(e => <button key={e} data-expr={e} class={face.requested === e ? 'sel' : ''} onClick={() => cmd('face_express', { expression: e, seconds: hold }, { label: e })}>{e}</button>)}
+      </div>
+      <label class="row dim">For
+        <select id="faceHold" value={hold} onChange={e => setHold(Number(e.currentTarget.value))}>
+          <option value={5}>5 seconds</option><option value={30}>30 seconds</option><option value={300}>5 minutes</option><option value={0}>until changed</option>
+        </select>
+      </label>
+      <p class="dim">Safety always shows over an expression: failsafe looks alarmed, and kill shows crossed-out eyes.</p>
+      <details>
+        <summary>Look and when it shows</summary>
+        <div class="row">{['Off', 'When idle', 'Robot'].map((n, i) => <button key={n} data-face-mode={i} class={mode === i ? 'sel' : ''} onClick={() => set('FACE_MODE', i)}>{n}</button>)}</div>
+        <p class="dim">{mode === 0 ? 'Only shows when you press Show.' : mode === 1 ? `Comes up after ${param('FACE_IDLE_S') ?? 60} s untouched.` : 'The face is the main screen, and comes back a few seconds after the phone is used.'}</p>
+        <div class="row">{['Eyes', 'Eyes and mouth', 'Visor'].map((n, i) => <button key={n} data-face-style={i} class={style === i ? 'sel' : ''} onClick={() => set('FACE_STYLE', i)}>{n}</button>)}</div>
+        <div class="row">{FACE_HUES.map(([h, name]) => (
+          <button key={h} data-face-hue={h} title={name} aria-label={name} class={Math.abs(hue - h) < 1 ? 'sel' : ''} onClick={() => set('FACE_HUE', h)}
+            style={{ background: `hsl(${h} 90% 55%)`, width: '34px', height: '34px', borderRadius: '50%', padding: 0 }} />
+        ))}</div>
+        <label class="row dim">Brightness
+          <input type="range" min={0.05} max={1} step={0.05} value={param('FACE_BRIGHT') ?? 0.6} onChange={e => set('FACE_BRIGHT', Number(e.currentTarget.value))} />
+        </label>
+      </details>
+    </Panel>
+  );
+}
+
 function SkillsPanel() {
   const caps = S.hello?.caps;
   if (!isOperator() || (!caps?.skills?.length && !caps?.behaviors?.length)) return null;
@@ -233,6 +280,7 @@ export function Operate() {
         <ModePanel />
         <MissionPanel />
         <TriggersPanel />
+        <FacePanel />
         <SkillsPanel />
         <Stats />
         <Joints />

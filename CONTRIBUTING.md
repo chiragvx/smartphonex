@@ -1,6 +1,6 @@
 # Contributing
 
-Devices, protocols, gaits and phone test reports are all welcome. Contributions are accepted under the Apache-2.0 license.
+Devices, protocols, gaits and phone reports are all welcome. For a phone, attach its report from **Setup, App health** to an issue: see [docs/PHONES.md](docs/PHONES.md). Contributions are accepted under the Apache-2.0 license.
 
 ## Adding a device pack
 
@@ -28,4 +28,8 @@ published examples where they exist, as `DeviceTest` does. Say whether it's been
 |---|---|
 | `./gradlew testDebugUnitTest` | Core logic |
 | `cd relay && npm test` | Relay security |
-| `tools/e2e.mjs`, `device-e2e.mjs`, `fc-e2e.mjs`, `relay-e2e.mjs`, `qr-e2e.sh` | Live checks on a phone or emulator |
+| `./gradlew lintDebug` | Android lint. New issues fail; `app/lint-baseline.xml` holds the old ones |
+| `cd web && npx tsc --noEmit && npx vite build`, then `node tools/size-budget.mjs` | Ground station. Commit the built files |
+| `tools/e2e.mjs`, `device-e2e.mjs`, `fc-e2e.mjs`, `backup-e2e.mjs`, `face-e2e.mjs`, `diag-e2e.mjs`, `relay-e2e.mjs`, `qr-e2e.sh` | Live checks on a phone or emulator |
+
+CI runs everything except the live checks on every push. If a change alters the shape of a saved file, add a migration: see [docs/RELEASING.md](docs/RELEASING.md).

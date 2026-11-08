@@ -83,7 +83,14 @@ export function createRelay({ dataDir = join(HERE, 'data'), webDir = join(HERE, 
   let offlineSince = Date.now();
   let lastOutageMs = 0;
 
-  const clientIp = req => (trustProxy && (req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for']?.split(',')[0]?.trim())) || req.socket.remoteAddress;
+  // Only the hop our own proxy added can be believed. Cloudflare overwrites CF-Connecting-IP, so it's trusted only
+  // in 'cloudflare' mode. Any other proxy appends the address it saw to X-Forwarded-For, so take the last entry:
+  // earlier ones come from the client and can be made up to get round sign-in lockouts.
+  const clientIp = req => {
+    if (trustProxy === 'cloudflare' && req.headers['cf-connecting-ip']) return String(req.headers['cf-connecting-ip']).trim();
+    if (trustProxy) { const last = String(req.headers['x-forwarded-for'] ?? '').split(',').pop()?.trim(); if (last) return last; }
+    return req.socket.remoteAddress;
+  };
   const isHttps = req => trustProxy && req.headers['x-forwarded-proto'] === 'https';
 
   function cookieSession(req) {
@@ -572,7 +579,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT || 8787);
   const relay = createRelay({
     dataDir: process.env.RELAY_DATA || join(HERE, 'data'),
-    trustProxy: process.env.TRUST_PROXY === '1',
+    ...(process.env.RELAY_WEB ? { webDir: process.env.RELAY_WEB } : {}),
+    // 1: behind a proxy that appends X-Forwarded-For (Caddy, nginx). cloudflare: behind a Cloudflare tunnel.
+    trustProxy: process.env.TRUST_PROXY === 'cloudflare' ? 'cloudflare' : process.env.TRUST_PROXY === '1',
   });
   relay.server.listen(port, process.env.HOST || '127.0.0.1', () => console.log(`relay listening on ${process.env.HOST || '127.0.0.1'}:${port}`));
 }

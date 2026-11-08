@@ -10,3 +10,7 @@ results/
 dist/
 web/node_modules/
 .kotlin/
+keystore.properties
+*.jks
+*.keystore
+.signing/

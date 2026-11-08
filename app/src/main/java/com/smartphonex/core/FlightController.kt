@@ -93,6 +93,7 @@ class FlightController(
     private var home: GpsFix? = null
     private var arrivedHome = false
     private var batteryPct: Double? = null
+    private var batteryKnown = false
     private var accelNorm: Double? = null
     private var magNorm: Double? = null
     private var thermal = 0
@@ -207,7 +208,7 @@ class FlightController(
     val magStrength: Double? get() = synchronized(lock) { magNorm }
     val overrunCount: Long get() = synchronized(lock) { overruns }
     val worstStepMs: Double get() = synchronized(lock) { dtMaxShown }
-    fun batteryText(): String = synchronized(lock) { batteryPct?.let { "${it.toInt()}% battery" } ?: "Unknown" }
+    fun batteryText(): String = synchronized(lock) { batteryPct?.let { "${it.toInt()}% battery" } ?: if (batteryKnown) "No battery: mains power" else "Unknown" }
 
     /** Health of each part: ok, bad, or none when this device doesn't have it. */
     fun healthMap(): Map<String, String> = synchronized(lock) {
@@ -224,7 +225,8 @@ class FlightController(
         )
     }
 
-    fun onDeviceState(battery: Double, thermalStatus: Int) = synchronized(lock) { batteryPct = battery; thermal = thermalStatus }
+    /** [battery] is null on a device without one, which then never fails the battery check. */
+    fun onDeviceState(battery: Double?, thermalStatus: Int) = synchronized(lock) { batteryPct = battery; batteryKnown = true; thermal = thermalStatus }
 
     private fun refreshMount() {
         val key = p("MOUNT_TYPE") to p("MOUNT_YAW")

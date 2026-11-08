@@ -75,7 +75,7 @@ class AndroidSensors(private val context: Context, private val rt: VehicleRuntim
 
     private fun granted(p: String) = context.checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
 
-    private val flightThread = HandlerThread("flight-sensors", android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY).apply { start() }
+    private val flightThread = HandlerThread("flight-sensors", android.os.Process.THREAD_PRIORITY_URGENT_AUDIO).apply { start() }
     private val flightHandler = Handler(flightThread.looper)
     private val flightListeners = ArrayList<SensorEventListener>()
 
@@ -264,6 +264,10 @@ class AndroidSensors(private val context: Context, private val rt: VehicleRuntim
             thermal = context.getSystemService(PowerManager::class.java).currentThermalStatus
             rt.sensors.update("phone.thermal", doubleArrayOf(thermal.toDouble()))
         }
-        if (b != null) rt.fc.onDeviceState(b.getIntExtra(BatteryManager.EXTRA_LEVEL, 100) * 100.0 / b.getIntExtra(BatteryManager.EXTRA_SCALE, 100).coerceAtLeast(1), thermal)
+        // A device with no battery (a TV box, or a board on mains power) reports level 0. That's not a flat battery.
+        if (b != null) rt.fc.onDeviceState(
+            if (!b.getBooleanExtra(BatteryManager.EXTRA_PRESENT, true)) null
+            else b.getIntExtra(BatteryManager.EXTRA_LEVEL, 100) * 100.0 / b.getIntExtra(BatteryManager.EXTRA_SCALE, 100).coerceAtLeast(1),
+            thermal)
     }
 }

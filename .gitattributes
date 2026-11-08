@@ -1,0 +1,12 @@
+# LF everywhere in the repository, so builds and checks match on every OS. Windows scripts keep CRLF.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.jar binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.webp binary
+*.zip binary
+*.apk binary
+*.jks binary

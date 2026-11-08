@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+USB-UART adapters SmartPhoneX can open. Plugging one in offers to open the app, and ticking "use by default" keeps
+the permission, so it isn't asked again. By vendor: FTDI, Silicon Labs, WCH (CH340, CH341, CH343, CH9102), Prolific.
+-->
+<resources>
+    <usb-device vendor-id="1027" />
+    <usb-device vendor-id="4292" />
+    <usb-device vendor-id="6790" />
+    <usb-device vendor-id="1659" />
+</resources>

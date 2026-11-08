@@ -284,6 +284,7 @@ class HardwareLink(private val provider: TransportProvider, private val log: Eve
     }
 
     private fun pump() {
+        runCatching { Realtime.enter("hardware-output", OUTPUT_PERIOD_MS * 1_000_000) }
         while (running) {
             val l = latest
             if (l == null) { Thread.sleep(5); continue }

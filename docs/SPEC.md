@@ -111,8 +111,32 @@ New `cmd` values, each answered by the usual `ack`:
 | `fence_set` | `fence`: `polygon`, `keepOut`, `maxDistM`, `maxAltM`, `action` |
 | `home_set` | none |
 | `pose_capture` | `skill`, `steps`, `loops` |
+| `face_express` | `expression`: one of `neutral happy excited sad angry surprised scared confused sleepy curious wink love`, or `auto` to hand back to the device's state. `seconds`: default 4, 0 holds until changed, at most 3600. AI may use it |
+| `face_show` | `show`: true or false. Works with the face set to off. AI may use it |
+
+Serial transports in a device description take `baud`, and optionally `data_bits` (5 to 8), `parity` (`none`, `even`, `odd`),
+`stop_bits` (1 or 2) and `inverted` (idle-low, as SBUS is; FTDI adapters only). See `docs/USB_HARDWARE.md`.
+
+App data and health, on the phone's own address only:
+
+| Request | What |
+|---|---|
+| `GET /backup?token=`, `&media=1` | A backup zip. Secrets are never in it |
+| `POST /backup/restore` with `Authorization: Bearer` | Restore one. Refused while armed. The app restarts to apply it |
+| `GET /diagnostics?token=` | `exits` (why the app stopped), `crashes`, `update` |
+| `GET /diagnostics/phone?token=` | The phone report, as a file |
+| `GET /diagnostics/crash/{name}?token=` | One crash, as text |
+| `POST /diagnostics/update` with `Authorization: Bearer` | Check for a newer release now |
 
 Review files, with `?token=` on the phone or a session cookie on a relay (operators only): `GET /review/files`, `/review/file/log/{name}`, `/review/file/photo/{name}`, `/review/frames/{run}`, `/review/frame/{run}/{t}`.
 
 A receiver channel mapped to `trigger:<id>` fires that trigger each time it goes high.
+
+### The face
+
+The phone can show a face, mostly for robots. Settings `FACE_MODE` (0 off, 1 after `FACE_IDLE_S` untouched, 2 robot),
+`FACE_STYLE` (0 eyes, 1 eyes and mouth, 2 visor), `FACE_HUE` and `FACE_BRIGHT` are per device, like any setting.
+`ops.face` reports `{shown, mode, requested, held, blocked}`; `blocked` says why it can't show, such as driving from the phone's screen.
+Safety states always show over an expression: failsafe is alarmed and red, and kill shows crossed-out eyes.
+The face has no buttons. A tap anywhere closes it and shows the controls, with STOP. MCP tools: `vehicle_set_face`, `vehicle_show_face`.
 

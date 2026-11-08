@@ -22,7 +22,14 @@ data class ActuatorDef(
     val feedback: List<String> = emptyList(),
 )
 
-data class TransportDef(val id: String, val type: String, val baud: Int = 115200, val host: String? = null, val port: Int? = null, val template: String? = null)
+/**
+ * How to reach the device. For serial: [dataBits], [parity] (none, even, odd) and [stopBits] set the line, so SBUS can use
+ * 100000 8E2. [inverted] means the line is idle-low, as SBUS is: only FTDI adapters set up with FT_PROG can do that alone.
+ */
+data class TransportDef(
+    val id: String, val type: String, val baud: Int = 115200, val host: String? = null, val port: Int? = null, val template: String? = null,
+    val dataBits: Int = 8, val parity: String = "none", val stopBits: Int = 1, val inverted: Boolean = false,
+)
 data class InputDef(val id: String, val driver: String, val transport: String, val map: Map<String, String>, val failsafeOnLoss: Boolean = true)
 data class SensorDef(val id: String, val source: String)
 data class ControllerDef(val id: String, val type: String, val gains: Map<String, Double> = emptyMap(), val params: JsonObject = JsonObject(emptyMap()))
@@ -95,7 +102,10 @@ object DeviceSchema {
         val state = o.obj("safe_state")
         val d = DeviceDescription(
             id, name, o.s("class") ?: "other", o.s("hazard") ?: "light",
-            o.arr("transports").map { TransportDef(it.s("id") ?: "", it.s("type") ?: "", it.i("baud") ?: 115200, it.s("host"), it.i("port"), it.s("template")) },
+            o.arr("transports").map {
+                TransportDef(it.s("id") ?: "", it.s("type") ?: "", it.i("baud") ?: 115200, it.s("host"), it.i("port"), it.s("template"),
+                    it.i("data_bits") ?: 8, it.s("parity") ?: "none", it.i("stop_bits") ?: 1, (it["inverted"] as? JsonPrimitive)?.booleanOrNull ?: false)
+            },
             actuators,
             o.arr("sensors").map { SensorDef(it.s("id") ?: "", it.s("source") ?: "") },
             o.arr("inputs").map { InputDef(it.s("id") ?: "", it.s("driver") ?: "", it.s("transport") ?: "", it.strs("map"), it.b("failsafe_on_loss") ?: true) },
@@ -139,6 +149,10 @@ object DeviceSchema {
             if (t.baud !in 300..4_000_000) e += "transport ${t.id}: baud out of range"
             if (t.type == "tcp" && (t.host == null || t.port == null)) e += "transport ${t.id}: tcp needs host and port"
             if (t.template != null && t.template.length > 80) e += "transport ${t.id}: template too long"
+            if (t.dataBits !in 5..8) e += "transport ${t.id}: data_bits must be 5 to 8"
+            if (t.parity !in setOf("none", "even", "odd")) e += "transport ${t.id}: parity must be none, even or odd"
+            if (t.stopBits !in 1..2) e += "transport ${t.id}: stop_bits must be 1 or 2"
+            if (t.baud !in 300..4_000_000) e += "transport ${t.id}: baud must be 300 to 4000000"
         }
         for (a in d.actuators) {
             val n = "actuator ${a.id}"
@@ -189,6 +203,10 @@ object DeviceSchema {
         put("schema", VERSION); put("id", d.id); put("name", d.name); put("class", d.deviceClass); put("hazard", d.hazard)
         putJsonArray("transports") { d.transports.forEach { t -> addJsonObject {
             put("id", t.id); put("type", t.type); put("baud", t.baud); t.host?.let { put("host", it) }; t.port?.let { put("port", it) }; t.template?.let { put("template", it) }
+            if (t.dataBits != 8) put("data_bits", t.dataBits)
+            if (t.parity != "none") put("parity", t.parity)
+            if (t.stopBits != 1) put("stop_bits", t.stopBits)
+            if (t.inverted) put("inverted", true)
         } } }
         putJsonArray("actuators") { d.actuators.forEach { a -> addJsonObject {
             put("id", a.id); put("driver", a.driver); a.transport?.let { put("transport", it) }; put("address", a.address); put("unit", a.unit)

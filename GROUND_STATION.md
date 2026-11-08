@@ -3,7 +3,7 @@
 **Goal:** one ground station for anything. It should work the same way for a boat, plane, arm or biped, and do what
 a dedicated ground control app does: test, arm, trigger, plan waypoints, watch live video, review logs, and more.
 
-Status: **Phase 1 is built** (app build 10). Section 14 lists what's been tested and what's still to do. Phase 2 is still a plan.
+Status: **Phase 1 is built** (app build 10). Section 14 lists what's been tested and what's still to do. Phase 2 is now part of `ROADMAP.md`.
 
 ## 1. Rules
 

@@ -1,0 +1,9 @@
+{$DOMAIN} {
+	encode gzip
+	# The relay sets its own security headers. Caddy adds HSTS once HTTPS is working.
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy relay:8787 {
+		# Only Cloudflare may set this. The relay ignores it in this mode anyway.
+		header_up -Cf-Connecting-Ip
+	}
+}

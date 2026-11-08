@@ -124,6 +124,13 @@ test('one address guessing across many accounts gets locked out, without affecti
   assert.equal((await login('op', 'operator-password')).status, 303);
 });
 
+test('a client faking proxy headers is still locked out by the address the proxy saw', async () => {
+  // The proxy appends the real address last. Everything before it, and CF-Connecting-IP outside cloudflare mode, is the client's.
+  const fake = i => ({ 'x-forwarded-for': `10.9.9.${i}, 198.51.100.77`, 'cf-connecting-ip': `10.8.8.${i}` });
+  for (let i = 0; i < 5; i++) await login(`spoof${i}`, 'wrong-password', fake(i));
+  assert.equal((await login('op', 'operator-password', fake(99))).status, 429);
+});
+
 test('wrong password lockout cannot be used on __proto__ style names', async () => {
   assert.equal((await login('__proto__', 'not-the-password')).status, 401);
   assert.equal((await login('constructor', 'not-the-password')).status, 401);

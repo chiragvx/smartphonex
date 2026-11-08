@@ -1,0 +1,7 @@
+*
+!relay/package.json
+!relay/package-lock.json
+!relay/server.mjs
+!relay/auth.mjs
+!relay/admin.mjs
+!app/src/main/assets/web

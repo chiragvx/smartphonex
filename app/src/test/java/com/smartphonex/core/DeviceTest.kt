@@ -139,6 +139,20 @@ class DeviceSchemaTest {
         assertEquals(d, again)
     }
 
+    @Test fun serialLineSettingsRoundTrip() {
+        val sbus = good.replace("\"actuators\"", "\"transports\":[{\"id\":\"rx\",\"type\":\"usb-uart\",\"baud\":100000,\"parity\":\"even\",\"stop_bits\":2,\"inverted\":true}],\"actuators\"")
+        val (d, errors) = DeviceSchema.parse(parse(sbus))
+        assertTrue(errors.toString(), errors.isEmpty())
+        val t = d!!.transports.single()
+        assertEquals(TransportDef("rx", "usb-uart", 100000, parity = "even", stopBits = 2, inverted = true), t)
+        assertEquals(t, DeviceSchema.parse(DeviceSchema.toJson(d)).first!!.transports.single())
+        // Defaults stay out of the saved file, so older packs read the same.
+        assertFalse(DeviceSchema.toJson(DeviceSchema.parse(parse(good)).first!!).toString().contains("parity"))
+        val bad = sbus.replace("\"even\"", "\"mark\"").replace("\"stop_bits\":2", "\"stop_bits\":3")
+        val e = DeviceSchema.parse(parse(bad)).second.joinToString()
+        assertTrue(e, e.contains("parity") && e.contains("stop_bits"))
+    }
+
     private fun errorsFor(edit: (String) -> String) = DeviceSchema.parse(parse(edit(good))).second.joinToString()
 
     @Test fun reportsUsefulErrors() {
@@ -319,7 +333,9 @@ class EngineTest {
         val fake = hw(false)
         engine.commissionMove("k", 1.0, 200)
         run(0.0, 100)
-        Thread.sleep(80)
+        val until = System.currentTimeMillis() + 2000
+        while (synchronized(fake.sent) { fake.sent.isEmpty() } && System.currentTimeMillis() < until) Thread.sleep(10)
+        Thread.sleep(40)
         val sent = synchronized(fake.sent) { fake.sent.toList() }
         assertTrue(sent.isNotEmpty())
         assertTrue("only address 2", sent.all { it[2] == 2.toByte() && it.size == 10 })
@@ -328,7 +344,9 @@ class EngineTest {
     @Test fun signedOffDeviceReachesHardware() {
         val fake = hw(true)
         run(1.0, 200)
-        Thread.sleep(80)
+        // The writer runs on its own thread. Wait for it rather than a fixed time, which fails on a busy machine.
+        val until = System.currentTimeMillis() + 2000
+        while (synchronized(fake.sent) { fake.sent.isEmpty() } && System.currentTimeMillis() < until) Thread.sleep(10)
         assertTrue(synchronized(fake.sent) { fake.sent.size } > 0)
     }
 }
