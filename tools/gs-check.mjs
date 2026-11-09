@@ -232,37 +232,63 @@ await js(`document.querySelector('#phoneReport').scrollIntoView()`);
 await sleep(300);
 await shot('setup-health');
 
-// Plan.
+// Plan: a plan file, checked live by the phone.
 await page('plan');
 await sleep(500);
-const m = await rect('#planMap');
-const clickMap = async (fx, fy) => { const x = m.x + m.w * fx, y = m.y + m.h * fy; await mouse('mousePressed', x, y); await mouse('mouseReleased', x, y); await sleep(120); };
-const before2 = await js(`document.querySelectorAll('#points .item').length`);
-for (let i = 0; i < 5; i++) await clickMap(0.3 + i * 0.1, 0.25);
-check('Clicking the map adds points', (await js(`document.querySelectorAll('#points .item').length`)) === before2 + 5, await js(`document.querySelectorAll('#points .item').length`));
-await js(`[...document.querySelectorAll('button')].find(b => b.textContent === 'Undo').click()`);
+// Measured each time: once checked, the profile and timeline appear under the map and it shrinks.
+const clickMap = async (fx, fy) => { const m = await rect('#planMap'); const x = m.x + m.w * fx, y = m.y + m.h * fy; await mouse('mousePressed', x, y); await mouse('mouseReleased', x, y); await sleep(150); };
+const steps = () => js(`document.querySelectorAll('#steps .item').length`);
+await js(`document.querySelector('[data-tool=goto]').click()`);
+const before2 = await steps();
+for (let i = 0; i < 4; i++) await clickMap(0.3 + i * 0.1, 0.3);
+check('Clicking the map adds steps', (await steps()) === before2 + 4, await steps());
+await clickButton('Undo');
 await sleep(100);
-check('Undo removes one', (await js(`document.querySelectorAll('#points .item').length`)) === before2 + 4);
-await js(`[...document.querySelectorAll('button')].find(b => b.textContent === 'Redo').click()`);
+check('Undo removes one', (await steps()) === before2 + 3);
+await clickButton('Redo');
 await sleep(100);
-check('Redo restores it', (await js(`document.querySelectorAll('#points .item').length`)) === before2 + 5);
-await click('#points .item:last-child');
+check('Redo restores it', (await steps()) === before2 + 4);
+check('The phone checks it as it changes', await until(async () => /Checks out|problem/.test(await text('#checkState')), 5000), await text('#checkState'));
+check('It becomes a timeline', await until(() => js(`document.querySelectorAll('#timeline .item').length >= 4`), 3000), await js(`document.querySelectorAll('#timeline .item').length`));
+await click('#steps .item:last-child');
 await sleep(150);
-check('A point can be edited', await has('#pointEdit'));
-await js(`[...document.querySelectorAll('#pointEdit label')].find(l => l.textContent.startsWith('Arrival')).querySelector('input').value = 0; [...document.querySelectorAll('#pointEdit label')].find(l => l.textContent.startsWith('Arrival')).querySelector('input').dispatchEvent(new Event('change', { bubbles: true }))`);
+check('A step can be edited', await has('#stepEdit'));
+const setField = async (label, v) => js(`(() => { const l = [...document.querySelectorAll('#stepEdit label')].find(l => l.textContent.startsWith(${JSON.stringify(label)})); const i = l.querySelector('input'); i.value = ${JSON.stringify(String(v))}; i.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+await setField('Arrival radius', 0);
+check('A bad step is refused with a reason, as it is made', await until(async () => /radius/.test(await text('#problems')), 4000), await text('#problems'));
+await setField('Arrival radius', 5);
+check('Fixed, it checks out again', await until(async () => /Checks out/.test(await text('#checkState')), 4000), await text('#checkState') + ' ' + await text('#problems'));
+// A survey: four corners, then Finish.
+await js(`document.querySelector('[data-tool=survey]').click()`);
+for (const [fx, fy] of [[0.35, 0.5], [0.6, 0.5], [0.6, 0.7], [0.35, 0.7]]) await clickMap(fx, fy);
+await click('#finishDrawing');
 await sleep(150);
-await click('#upload');
-check('A bad plan is refused with a reason', await until(() => has('#problems'), 2500), await text('#problems'));
-await js(`[...document.querySelectorAll('#pointEdit label')].find(l => l.textContent.startsWith('Arrival')).querySelector('input').value = 5; [...document.querySelectorAll('#pointEdit label')].find(l => l.textContent.startsWith('Arrival')).querySelector('input').dispatchEvent(new Event('change', { bubbles: true }))`);
+check('A survey is drawn as one step', (await steps()) === before2 + 5 && /Survey/.test(await text('#steps')), await text('#steps'));
+check('Its turns and lines show in the timeline', await until(async () => /survey/.test(await text('#timeline')), 4000), (await text('#timeline')).slice(0, 120));
+await js(`document.querySelector('[data-tool=zone-landing]').click()`);
+await clickMap(0.2, 0.8);
+check('A landing zone can be placed', /Safe zones \(1\)/.test(await js(`document.body.textContent`)));
+// Narrow survey lines take a slow vehicle longer than its battery: the check says so. Wider ones fit.
+await click('#steps .item:last-child');
 await sleep(150);
-await js(`document.querySelector('[data-wp-trigger=mark]')?.click()`);
-await sleep(100);
-await click('#upload');
-check('A good plan is accepted', await until(() => has('#uploaded'), 2500), await text('#problems'));
+await setField('Line spacing', 60);
+check('Wider survey lines fit the battery', await until(async () => /Checks out/.test(await text('#checkState')), 4000), await text('#problems'));
+check('The profile shows over time', await has('.profile svg'));
 await shot('plan');
+// Kept on the phone by name, then opened again.
+await js(`(() => { const i = document.querySelector('#planName'); i.value = 'gs-check plan'; i.dispatchEvent(new Event('input', { bubbles: true })); i.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+await sleep(100);
+await clickButton('Save as "gs-check plan"');
+await sleep(600);
+await clickButton('Show');
+check('Saved plans are listed', await until(async () => /gs-check plan/.test(await text('#library')), 3000), await text('#library'));
+await click('#upload');
+check('Sending answers: on the phone, or why not', await until(() => js(`!!document.querySelector('#uploaded, #sendProblem')`), 4000), await text('#sendProblem'));
+const sent = await has('#uploaded');
 await page('operate');
 await sleep(800);
-check('The mission shows in Operate', /point \d+ of \d+/.test(await text('#missionState')), await text('#missionState'));
+if (sent) check('The plan shows in Operate', /point \d+ of \d+/.test(await text('#missionState')), await text('#missionState'));
+else console.log("SKIP  Plan in Operate: sending needs the phone's home, and there's no good GPS position indoors");
 const gpsGood = await js(`[...document.querySelectorAll('.side .check')].every(x => !/^.\\s*GPS/.test(x.innerText))`);
 if (gpsGood) {
   await hold('#missionStart', 1500);
@@ -332,6 +358,19 @@ await sleep(500);
 await click('#stop');
 await until(async () => (await arm()) === 'Disarmed');
 
+// A plane plans with height: take off, a profile of height over time, and landing.
+await selectDevice('plane');
+await page('plan');
+await sleep(500);
+check('A plane can take off', await clickButton('+ Take off'));
+await js(`document.querySelector('[data-tool=land]').click()`);
+await clickMap(0.2, 0.3);
+check('And land', /Land/.test(await text('#steps')), await text('#steps'));
+check('Its plan is checked with height', await until(() => js(`!!document.querySelector('.profile svg path')`), 5000), await text('#checkState'));
+check('Climbs and the landing are in the timeline', await until(async () => /touches down/.test(await text('#timeline')), 3000), (await text('#timeline')).slice(-160));
+await sleep(300);
+await shot('plan-plane');
+
 // Narrow layout.
 await cdp('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 await selectDevice('car');
@@ -362,6 +401,16 @@ const cleaned = await js(`new Promise(res => {
   setTimeout(() => res(false), 4000);
 })`);
 check('Test trigger cleaned up', cleaned === true);
+const planGone = await js(`new Promise(res => {
+  const w = new WebSocket('ws://${host}/ws?token=${token}');
+  w.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'hello') w.send(JSON.stringify({ type: 'cmd', seq: Date.now() * 1000 + 1, sentAt: Date.now() + (m.t - Date.now()), cmd: 'plan_delete', name: 'gs-check plan' }));
+    if (m.type === 'ack') { w.close(); res(m.accepted); }
+  };
+  setTimeout(() => res(false), 4000);
+})`);
+check('Test plan cleaned up', planGone === true);
 
 check('No script errors or blocked requests', problems.length === 0, problems.slice(0, 5).join(' || '));
 console.log(`\n${failed ? `${failed} FAILED` : 'ALL PASSED'} (started on ${startProfile})`);

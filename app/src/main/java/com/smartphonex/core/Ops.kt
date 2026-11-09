@@ -809,6 +809,29 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
                 rt.log.event("mission", source.name, "uploaded", "${m.name}: ${m.items.size} points")
                 CommandResult.OK
             }
+            "plan_save" -> {
+                val plan = a["plan"] as? JsonObject ?: return no("malformed", "plan is required")
+                val name = (a.s("name") ?: plan.s("name") ?: "").trim().take(60)
+                if (name.isEmpty()) return no("malformed", "a saved plan needs a name")
+                if (plan.toString().length > 2_000_000) return no("out_of_range", "that plan is too big to keep")
+                val f = planFileFor(name)
+                if (!f.exists() && (plansDir.listFiles()?.size ?: 0) >= 200) return no("out_of_range", "200 plans are kept at most. Delete some first")
+                atomicWrite(f, buildJsonObject { put("name", name); put("savedAt", System.currentTimeMillis()); put("plan", plan) }.toString())
+                CommandResult(true, "ok", "saved", buildJsonObject { put("name", name) })
+            }
+            "plan_list" -> CommandResult(true, "ok", "", buildJsonObject {
+                putJsonArray("plans") {
+                    plansDir.listFiles { f -> f.name.endsWith(".json") }?.mapNotNull { f -> runCatching { Json.parseToJsonElement(f.readText()).jsonObject }.getOrNull() }
+                        ?.sortedByDescending { it.d("savedAt") ?: 0.0 }
+                        ?.forEach { o -> addJsonObject { put("name", o.s("name")); put("savedAt", o.d("savedAt")?.toLong()); put("steps", (o["plan"] as? JsonObject)?.get("steps")?.let { (it as? JsonArray)?.size } ?: 0) } }
+                }
+            })
+            "plan_load" -> {
+                val f = planFileFor(a.s("name") ?: "")
+                val o = runCatching { Json.parseToJsonElement(f.readText()).jsonObject }.getOrNull() ?: return no("out_of_range", "no saved plan by that name")
+                CommandResult(true, "ok", "", buildJsonObject { put("name", o.s("name")); put("plan", o["plan"] ?: JsonObject(emptyMap())) })
+            }
+            "plan_delete" -> if (planFileFor(a.s("name") ?: "").delete()) CommandResult.OK else no("out_of_range", "no saved plan by that name")
             "plan_upload" -> {
                 val plan = a["plan"] as? JsonObject ?: return no("malformed", "plan is required")
                 if (rt.fc.homeNow == null) return no("not_permitted", "set home first: a plan is checked against the real home before it's sent")
@@ -888,6 +911,13 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         }
         trims.set(out, t)
         return CommandResult.OK
+    }
+
+    /** Saved plans, one file each under plans/, so backups carry them. The file name comes from the plan's name. */
+    private val plansDir = File(dir, "plans")
+    private fun planFileFor(name: String): File {
+        val slug = name.trim().lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-').take(60).ifEmpty { "plan" }
+        return File(plansDir, "$slug.json")
     }
 
     private fun forgetPlan() {
@@ -1380,6 +1410,6 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         const val WEAK_SIGNAL = 30.0
         const val MAX_PHOTOS = 500
         const val MAX_LOG_ROWS = 20_000
-        val AI_ALLOWED = setOf("plan_check", "trigger_fire", "mission_upload", "mission_pause", "mission_abort", "face_express", "face_show")
+        val AI_ALLOWED = setOf("plan_check", "plan_list", "plan_load","trigger_fire", "mission_upload", "mission_pause", "mission_abort", "face_express", "face_show")
     }
 }

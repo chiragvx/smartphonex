@@ -552,6 +552,23 @@ class OpsRuntimeTest {
         tick(2)
     }
 
+    @Test fun plansAreKeptOnThePhoneByName() {
+        assertEquals("no name anywhere", "malformed", ops("plan_save") { put("plan", JsonObject(roverPlan(60.0) - "name")) }.code)
+        assertTrue(ops("plan_save") { put("name", "Yard loop"); put("plan", roverPlan(60.0)) }.accepted)
+        assertTrue(ops("plan_save") { put("name", "Field, north"); put("plan", roverPlan(90.0)) }.accepted)
+        assertTrue("saving again replaces it", ops("plan_save") { put("name", "Yard loop"); put("plan", roverPlan(70.0)) }.accepted)
+        val list = ops("plan_list").data!!["plans"]!!.jsonArray.map { it.jsonObject["name"]!!.jsonPrimitive.content }
+        assertEquals(setOf("Yard loop", "Field, north"), list.toSet())
+        assertTrue("in the files a backup carries", File(dir, "plans").listFiles()!!.size == 2)
+        val loaded = ops("plan_load", Source.AI) { put("name", "Yard loop") }
+        assertTrue("the AI may read saved plans", loaded.accepted)
+        val lat = loaded.data!!["plan"]!!.jsonObject["steps"]!!.jsonArray[0].jsonObject["at"]!!.jsonArray[0].jsonPrimitive.double
+        assertEquals(north(70.0), lat, 1e-9)
+        assertFalse("but not delete them", ops("plan_delete", Source.AI) { put("name", "Yard loop") }.accepted)
+        assertTrue(ops("plan_delete") { put("name", "Yard loop") }.accepted)
+        assertEquals(1, ops("plan_list").data!!["plans"]!!.jsonArray.size)
+    }
+
     @Test fun runningOutOfTimeOnAMissionGoesToTheBestZoneItCanReach() {
         startZoned()
         gps(north(500.0))

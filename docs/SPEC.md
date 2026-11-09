@@ -108,6 +108,10 @@ New `cmd` values, each answered by the usual `ack`. An `ack` for a command that 
 | `trigger_save` | `trigger` |
 | `trigger_delete`, `trigger_prepare`, `trigger_fire` | `id` |
 | `mission_upload` | `mission`: `name`, `onEnd`, `onLinkLoss`, `items[]` of `lat`, `lon`, `alt`, `throttle`, `holdS`, `radiusM`, `triggers[]` |
+| `plan_save` | `name` (or the plan's own), `plan`. Keeps it on the phone under that name, replacing one of the same name. At most 200. People only |
+| `plan_list` | none. `data.plans[]`: `name`, `savedAt`, `steps`. AI may use it |
+| `plan_load` | `name`. `data`: `name`, `plan`. AI may use it |
+| `plan_delete` | `name`. People only |
 | `plan_upload` | `plan`. People only. Needs home set: the plan is compiled against the real home, and loaded only if it checks out. The ack's `data` is the same as `plan_check`'s. Replaces any loaded mission; `ops.planData` then holds the file |
 | `mission_start` | optional `hash`. For a sent plan it's compiled again and refused if it no longer checks out or its hash changed (home, settings or vehicle). A plane runs only sent plans, and only with `NAV_PLANE_MISS` 1 |
 | `mission_pause`, `mission_resume`, `mission_skip`, `mission_abort` | none |

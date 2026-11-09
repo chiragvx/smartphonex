@@ -6,12 +6,15 @@ export type Check = { id: string; label: string; status: string; detail: string;
 export type Trigger = { id: string; label: string; danger: boolean; armedOnly: boolean; count: number; cooldownMs: number; maxCount: number; aiAllowed: boolean; everyMeters: number; everySeconds: number; sensor: string | null; op: string | null; compare: number; action: { type: string; output: string | null; value: number; ms: number; skill: string | null; text: string | null } };
 export type MissionItem = { lat: number; lon: number; alt?: number | null; throttle?: number | null; holdS?: number; radiusM?: number; triggers?: string[] };
 export type MissionData = { name: string; onEnd: string; onLinkLoss: string; items: MissionItem[] };
-export type FenceData = { polygon: [number, number][]; keepOut: [number, number][][]; maxDistM: number; maxAltM: number; action: string };
+export type FenceData = { polygon: [number, number][]; keepOut: [number, number][][]; maxDistM: number; maxAltM: number; action: string; outerM?: number };
 export type Ops = {
   t: number; flightMode: string; owner: string | null; killed: boolean; readiness: Check[]; armProblem: string | null;
   test?: { output: string; value: number; owner: string };
   groundRun?: { state: 'IDLE' | 'RUNNING' | 'DONE' | 'STOPPED' | 'FAILED'; message: string | null; step: number; steps: number; throttle?: number };
-  mission: { state: string; name: string | null; index: number; total: number; dist: number | null; bearing: number | null; onLinkLoss: string | null };
+  mission: { state: string; name: string | null; index: number; total: number; dist: number | null; bearing: number | null; onLinkLoss: string | null; hash?: string; step?: string; expectAt?: number; elapsedS?: number; lateS?: number };
+  planData?: any;
+  divert?: { zone: string; kind: string; glide: boolean; why: string; lat: number; lon: number };
+  motorOut?: string; timeLeftS?: number;
   missionData?: MissionData;
   fence: { set: boolean; breach: string | null; data?: FenceData };
   triggers: Trigger[]; diag: string | null; ground: number;

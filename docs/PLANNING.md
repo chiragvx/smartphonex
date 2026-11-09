@@ -158,7 +158,7 @@ Stalling is never a fallback: in flight a plane keeps its speed before its altit
 | 1 | Format, compiler, timeline, enforced checks, `plan_check`, settings. Failsafe fix: a flying plane is never cut by an automatic failsafe. Exact leg check for today's missions | **Built**, 12 tests, checked on the phone |
 | 2 | Running a compiled plan (below) | **Built**, 9 tests. Untested in the air |
 | 3 | Safety in flight (below): a plane turns back before the fence, an outer limit, and a contingency chooser that goes to the best zone it can reach. Terminate stays off | **Built**, 6 tests. Untested in the air |
-| 4 | Ground station: Plan edits the file, checks it live, and shows the path as flown, action markers, zones and gaps, an altitude profile and the timeline. Inserting, reordering and multi-editing points; dragging fence corners. Saved plans on the phone, in backups | |
+| 4 | The Plan screen (below) | **Built**, browser-checked on the phone |
 | 5 | Operate shows expected against actual times and ETAs; Review shows the plan against what happened. A plane simulator, so all of this runs end to end without hardware | |
 
 #### Running a plan (stage 2)
@@ -204,6 +204,27 @@ All of this is decided on the phone and works with no link.
   the propeller this flight, so a microphone that can't hear it is never mistaken for a stopped motor. The plane then
   glides (`NAV_GLIDE_PITCH`, motor off) to the best zone within gliding distance, or the nearest if none is.
 - **GPS lost**: no zone can be found without a position. A plane circles under power, anything else stops, as before.
+
+#### The Plan screen (stage 4)
+
+- **It edits the plan file.** Tools add points, surveys and corridors (click the corners, then Finish), orbits, holds,
+  a landing (planes), landing and ditch zones, a planning home, the fence and keep-out areas. Take off, Go home and
+  Hold here are buttons.
+- **Editing on the map:** drag anything to move it, click **+** on a leg to insert a point there, and click a corner to
+  remove it.
+- **Steps** are listed in order with their ids. Move them up and down, remove them, and edit the selected one: height,
+  speed, radius, the template's own fields, actions (a trigger on arriving or every so many metres, or a notice), and
+  what to do if it can't.
+- **Checked as it changes.** Each edit is compiled on the phone a moment later. The screen shows ok or the problems,
+  each linked to its step and place; the warnings; distance, time with its range, and battery; and what it assumed.
+- **The map shows the path as the phone says it will be travelled**, turns included, with stretches out of safe
+  reach in red, problems as red crosses, and actions, holds and circling as markers.
+- **Under the map** are a profile of height over time (planes) with gaps shaded and actions marked, and the
+  timeline. Hovering the profile shows that moment on the map; clicking a row or a problem goes to it.
+- **Sending** sends a changed fence first, then the plan. Hold to start appears once the plan on the phone is this one.
+- **Saved plans** are kept on the phone by name (`plan_save`, `plan_list`, `plan_load`, `plan_delete`), under
+  `plans/`, so backups carry them. Plans download and open as files; GeoJSON opens as points and a fence.
+- `tools/gs-check.mjs` drives it in a real browser against the phone, for a car and a plane.
 
 Done when a plane plan with a survey, a too-steep climb and a turn near the fence is caught when planning with clear
 fixes; flown in the simulator, it handles a forced altitude miss and a link loss by its rules and goes to the right zone;
