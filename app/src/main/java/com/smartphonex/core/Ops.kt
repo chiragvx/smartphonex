@@ -314,6 +314,12 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
     private val writer = Executors.newSingleThreadExecutor { r -> Thread(r, "ops-store").apply { isDaemon = true } }
     val trims = TrimStore(File(dir, "trims.json"), { rt.profiles.activeId }, { job -> writer.execute(job) })
     val tester = OutputTester(System::currentTimeMillis)
+    val groundRun = GroundRun(System::currentTimeMillis)
+    val groundRuns = GroundRunStore(File(dir, "groundrun.json")) { job -> writer.execute(job) }
+    /** Ends every hold-to-run test: arming, AUTO and kill all do. */
+    fun stopTests() { tester.stop(); groundRun.stop("stopped: armed") }
+    /** Nothing is being driven by a test, so the microphone may learn background sounds. */
+    fun outputsAtRest() = tester.active() == null && !groundRun.running()
     val missions = MissionEngine(System::currentTimeMillis)
     private fun store(f: File, text: String) = writer.execute { runCatching { atomicWrite(f, text) } }
     /** Waits for queued saves. For shutdown and tests. */
@@ -442,6 +448,7 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
             val fresh = lastDiag?.let { (it["device"] as? JsonPrimitive)?.content == vehicle && (it["passed"] as? JsonPrimitive)?.boolean == true && System.currentTimeMillis() - it["t"]!!.jsonPrimitive.long < 3600_000 } == true
             out += Check("test", "Tests", if (fresh) "ok" else "fail", if (fresh) "Passed within the last hour" else "This vehicle requires a passing test first", if (fresh) "" else "Run the tests in Test")
         }
+        groundRunCheck()?.let { out += it }
         val items = checklistItems()
         if (rt.params.get("ARM_REQ_CHECK") >= 1.0) {
             val missing = items.filter { it !in checklist }
@@ -476,9 +483,51 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
     fun overrideFor(name: String): Double? {
         val now = System.currentTimeMillis()
         tester.active()?.let { (o, v) -> if (o == name) return v }
+        if (groundRun.running() && rt.profiles.active.channels.any { it.name == name && it.kind == ChannelKind.MOTOR_FORWARD }) {
+            return groundRunThrottle() ?: 0.0
+        }
         val ov = overrides[name] ?: return null
         if (ov.second <= now) { overrides.remove(name); return null }
         return ov.first
+    }
+
+    // --- The ground run (GroundRun.kt): its throttle, and storing what it measured.
+    private var storedRunAt = 0L
+
+    private fun groundRunThrottle(): Double? {
+        val s = rt.fc.propSample()
+        val u = groundRun.tick(s?.first ?: -1L, s?.second, s?.third)
+        synchronized(groundRun) { groundRun.result?.takeIf { it.atMs != storedRunAt }?.let { storedRunAt = it.atMs; storeGroundRun(it) } }
+        return u
+    }
+
+    private fun storeGroundRun(r: GroundRun.Baseline) {
+        val e = groundRuns.add(vehicle, r)
+        val c = e.comparison
+        val rpm = r.steps.joinToString(", ") { "${Math.round(it.revHz * 60)} rpm at ${Math.round(it.throttle * 100)}%" }
+        when {
+            c.changed -> {
+                // Learned airspeed belongs to the old setup: being confidently wrong is worse than knowing nothing.
+                val forgot = rt.params.get("PROP_KQ") > 0
+                if (forgot) rt.params.set("PROP_KQ", 0.0)
+                rt.log.event("prop", "phone", "setup changed", "ground run: ${c.why}. Stored as the new reference" + if (forgot) "; learned airspeed forgotten" else "")
+            }
+            e.reference === r -> rt.log.event("prop", "phone", "ground run", "first ground run for this setup, stored as its reference: $rpm")
+            else -> rt.log.event("prop", "phone", "ground run", "$rpm. Pack ${strengthText(c.strength)} the reference")
+        }
+    }
+
+    private fun strengthText(s: Double) = if (abs(s - 1) < 0.005) "as strong as" else "${"%.1f".format(abs(s - 1) * 100)}% ${if (s > 1) "stronger than" else "weaker than"}"
+
+    /** Shown before arming when the microphone hears the propeller: whether this flight has a fresh ground run. */
+    private fun groundRunCheck(): Check? {
+        if (rt.params.get("MIC_PROP") < 1 || rt.profiles.active.vehicleType != "plane") return null
+        val fix = "Restrain the plane and run the ground run in Test"
+        val e = groundRuns.get(vehicle) ?: return Check("groundrun", "Ground run", "warn", "None for this setup yet. Readings can't be checked for a harmonic mistake", fix)
+        val age = System.currentTimeMillis() - e.last.atMs
+        if (age > GroundRun.FRESH_MS) return Check("groundrun", "Ground run", "warn", "Last one ${age / 60_000} min ago: this pack isn't measured", fix)
+        if (e.comparison.changed) return Check("groundrun", "Ground run", "warn", "Setup changed: ${e.comparison.why}. Airspeed learning starts again", "")
+        return Check("groundrun", "Ground run", "ok", "${age / 60_000} min ago. Pack ${strengthText(e.comparison.strength)} the reference")
     }
 
     private fun limitForTest(c: Channel?): Double = when (c?.kind) {
@@ -507,6 +556,24 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
                 CommandResult.OK
             }
             "test_stop" -> { tester.stop(); CommandResult.OK }
+            "ground_run" -> {
+                if (mode != Mode.DISARMED) return no("not_permitted", "the ground run only runs while disarmed")
+                if (rt.controller.killed) return no("not_permitted", "kill is on. Arm once to clear it, then disarm")
+                if (rt.params.get("MIC_PROP") < 1) return no("not_permitted", "turn on MIC_PROP first")
+                rt.fc.propUnavailable?.let { return no("not_permitted", "microphone: $it") }
+                if (p.channels.none { it.kind == ChannelKind.MOTOR_FORWARD }) return no("not_permitted", "this vehicle has no forward-only motor output")
+                if (a.b("confirmed") != true) return no("needs_confirm", "Confirm the plane is restrained and everyone is clear of the propeller")
+                val lo = rt.params.get("PROP_GR_LO"); val hi = rt.params.get("PROP_GR_HI")
+                if (hi <= lo + 0.05) return no("out_of_range", "PROP_GR_HI must be above PROP_GR_LO")
+                groundRun.start(source, GroundRun.steps(lo, hi), rt.params.get("PROP_BLADES").toInt())?.let { return no("not_permitted", it) }
+                CommandResult.OK
+            }
+            "ground_run_stop" -> { groundRun.stop(); CommandResult.OK }
+            "ground_run_forget" -> {
+                if (mode != Mode.DISARMED) return no("not_permitted", "disarm first")
+                groundRuns.clear(vehicle)
+                CommandResult.OK
+            }
             "diagnostics_run" -> {
                 if (mode != Mode.DISARMED) return no("not_permitted", "disarm first")
                 if (diagRunning != null) return no("not_permitted", "tests are already running")
@@ -949,6 +1016,7 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         put("readiness", checksJson(readiness()))
         put("armProblem", armProblem())
         tester.status()?.let { put("test", it) }
+        put("groundRun", groundRun.json())
         put("mission", missions.json())
         if (canSeePrivate) missions.mission?.let { put("missionData", Geo.missionJson(it)) }
         put("fence", buildJsonObject { put("set", fence.isSet); put("breach", breachReason); if (canSeePrivate) put("data", Geo.fenceJson(fence)) })

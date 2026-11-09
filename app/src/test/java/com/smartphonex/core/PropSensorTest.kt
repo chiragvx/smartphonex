@@ -60,6 +60,15 @@ class PropSensorTest {
         assertFalse(t.otherFamily)
     }
 
+    @Test fun `a fan's tone at an odd multiple of half the speed doesn't halve the reading`() {
+        // Found on the phone: 7,611 rpm (blade tone 253.7 Hz, harmonics, motor tone at 7x) beside a laptop fan whose
+        // 188 Hz tone is about 3 x half the revolution rate. Half the true rate then explained one more peak and won.
+        val rev = 7611 / 60.0
+        val s = sum(tone(2 * rev, 0.2), tone(4 * rev, 0.12, 1.0), tone(6 * rev, 0.05, 2.0), tone(7 * rev, 0.06, 0.5), tone(188.0, 0.25))
+        val t = PropTone(rate).analyze(s, 40.0, 1500.0, 12.0)!!
+        assertEquals("${t.harmonics}", rev, t.revHz, 0.5)
+    }
+
     @Test fun `a blade tone faded by the microphone's weak low end isn't read as double`() {
         // 2,400 rpm: blade tone 80 Hz, nearly lost below the microphone's range, with its 2nd and 3rd harmonics clear.
         val s = sum(tone(80.0, 0.02), tone(160.0, 0.3, 1.0), tone(240.0, 0.2, 2.0))
@@ -196,18 +205,53 @@ class PropSensorTest {
     }
 
     /** Circles in a wind of [windMps] blowing towards [windToDeg], with real wind-triangle geometry. */
-    private fun fly(pa: PropAirspeed, seconds: Int, windMps: Double, windToDeg: Double, headingStep: Double = 12.0) {
+    private fun fly(
+        pa: PropAirspeed, seconds: Int, windMps: Double, windToDeg: Double, headingStep: Double = 12.0,
+        uLo: Double = 0.45, uHi: Double = 0.8, startMs: Long = 0, lie: Boolean = false,
+    ) {
         for (i in 0 until seconds) {
             val v = 11.0 + 4.0 * rnd.nextDouble()
-            val u = 0.45 + 0.35 * rnd.nextDouble()
+            val u = uLo + (uHi - uLo) * rnd.nextDouble()
             val minutes = i / 60.0
             val h = Math.toRadians(i * headingStep)
             val w = Math.toRadians(windToDeg)
             val e = v * sin(h) + windMps * sin(w)
             val n = v * cos(h) + windMps * cos(w)
             val course = (Math.toDegrees(atan2(e, n)) + 360) % 360
-            pa.add(PropAirspeed.Sample(nFor(v, u, minutes), u, minutes, hypot(e, n) + rnd.nextDouble(-0.3, 0.3), course))
+            // [lie]: the motor speed runs backwards against airspeed, which no propeller does.
+            val rev = if (lie) nFor(26.0 - v, u, minutes) else nFor(v, u, minutes)
+            pa.add(PropAirspeed.Sample(rev, u, minutes, hypot(e, n) + rnd.nextDouble(-0.3, 0.3), course, if (startMs > 0) startMs + i * 1000L else 0))
         }
+    }
+
+    @Test fun `no estimate at a throttle and motor speed it never flew together`() {
+        val pa = PropAirspeed()
+        fly(pa, 600, windMps = 3.0, windToDeg = 0.0, uLo = 0.45, uHi = 0.55)
+        assertNotNull(pa.refit())
+        val f = pa.fit!!
+        val n = (f.nMin + f.nMax) / 2
+        assertNull(pa.whyNot(nFor(13.0, 0.5, 5.0), 0.5, 5.0))
+        // Same motor speed range, but a throttle it never used: the fit matched its samples, but this is a guess.
+        assertTrue(pa.whyNot(n, 0.8, 5.0)!!, "hasn't learned together" in pa.whyNot(n, 0.8, 5.0)!!)
+        assertTrue("gliding", pa.whyNot(n, 0.0, 5.0)!!.contains("gliding"))
+        assertNotNull("a typical speed to compare with", f.cruiseMps.takeIf { it in 11.0..15.0 })
+    }
+
+    @Test fun `only recent circles count, so it follows a change in the wind`() {
+        val pa = PropAirspeed()
+        fly(pa, 600, windMps = 8.0, windToDeg = 180.0, startMs = 1_000_000)
+        fly(pa, 600, windMps = 4.0, windToDeg = 90.0, startMs = 1_600_000)
+        val f = pa.refit()!!
+        assertEquals("the new wind", 4.0, f.windMps, 1.0)
+        assertEquals(270.0, f.windFromDeg, 20.0)
+        assertTrue("old samples dropped: ${pa.count}", pa.count <= 361)
+    }
+
+    @Test fun `a fit that breaks physics is refused`() {
+        val pa = PropAirspeed()
+        fly(pa, 600, windMps = 2.0, windToDeg = 0.0, lie = true)
+        assertNull(pa.refit())
+        assertNull(pa.fit)
     }
 
     @Test fun `learns airspeed and the wind from circling`() {

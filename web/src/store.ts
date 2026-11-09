@@ -10,6 +10,7 @@ export type FenceData = { polygon: [number, number][]; keepOut: [number, number]
 export type Ops = {
   t: number; flightMode: string; owner: string | null; killed: boolean; readiness: Check[]; armProblem: string | null;
   test?: { output: string; value: number; owner: string };
+  groundRun?: { state: 'IDLE' | 'RUNNING' | 'DONE' | 'STOPPED' | 'FAILED'; message: string | null; step: number; steps: number; throttle?: number };
   mission: { state: string; name: string | null; index: number; total: number; dist: number | null; bearing: number | null; onLinkLoss: string | null };
   missionData?: MissionData;
   fence: { set: boolean; breach: string | null; data?: FenceData };

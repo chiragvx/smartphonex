@@ -99,6 +99,8 @@ New `cmd` values, each answered by the usual `ack`:
 | `kill` | none |
 | `test_output` | `output`, `value`, `confirmed`. Send every 100 ms: it stops by itself after 400 ms of silence |
 | `test_stop`, `diagnostics_run` | none |
+| `ground_run` | `confirmed`. Send every 100 ms, like `test_output`. Disarmed, people only, `MIC_PROP` 1 or more. Progress is in `ops.groundRun`, results in `fcs.prop.groundRun` |
+| `ground_run_stop`, `ground_run_forget` | none. Forget clears this vehicle's stored runs, so the next becomes the reference |
 | `test_record` | `test`, `status`, `detail` |
 | `checklist_set` | `item`, `done` |
 | `trim_set` | `output`, and any of `trim`, `reverse`, `lo`, `hi` |

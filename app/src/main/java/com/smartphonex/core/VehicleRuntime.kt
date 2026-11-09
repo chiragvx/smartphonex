@@ -153,6 +153,7 @@ class VehicleRuntime(val dir: File) {
         fc.missions = opsHolder.missions
         engine.trimFor = { opsHolder.trims.get(it) }
         engine.overrideFor = { opsHolder.overrideFor(it) }
+        fc.groundRuns = { opsHolder.groundRuns.get(profiles.activeId) }
     }
 
     /** Values a behavior may read. */

@@ -40,7 +40,7 @@ class VehicleController(
         if (source == Source.AI && (aiLocked || !profiles.active.aiMayArm)) return CommandResult.reject("not_permitted", "AI can't start this")
         if (mode == Mode.FAILSAFE && source == Source.AI) return CommandResult.reject("not_permitted", "failsafe needs a human to clear it")
         if (source != Source.AI) { aiLocked = false; killed = false }
-        ops()?.tester?.stop()
+        ops()?.stopTests()
         enterMode(Mode.AUTO, "mission from $source")
         lastMovedMs = clock()
         CommandResult.OK
@@ -320,7 +320,7 @@ class VehicleController(
             aiLocked = false
         }
         if (target == Mode.MANUAL) humanLastMs = now
-        if (target != Mode.DISARMED) { ops()?.armProblem()?.let { return CommandResult.reject("not_permitted", it) }; if (source != Source.AI) killed = false; lastMovedMs = now; ops()?.tester?.stop() }
+        if (target != Mode.DISARMED) { ops()?.armProblem()?.let { return CommandResult.reject("not_permitted", it) }; if (source != Source.AI) killed = false; lastMovedMs = now; ops()?.stopTests() }
         enterMode(target, "set_mode from $source")
         return CommandResult.OK
     }

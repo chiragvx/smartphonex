@@ -234,6 +234,24 @@ class OpsRuntimeTest {
         assertEquals("not_permitted", ops("test_output") { put("output", servo); put("value", 0.2) }.code)
     }
 
+    @Test fun theGroundRunIsAPersonsHoldToRunAndEndsWhenArmed() {
+        rt.profiles.select("plane")
+        assertEquals("not_permitted", ops("ground_run") { put("confirmed", true) }.code) // Microphone off.
+        rt.params.set("MIC_PROP", 1.0)
+        assertEquals("needs_confirm", ops("ground_run").code)
+        assertFalse("never the AI's", ops("ground_run", Source.AI) { put("confirmed", true) }.accepted)
+        assertTrue(ops("ground_run") { put("confirmed", true) }.accepted)
+        tick()
+        assertEquals(0.3, rt.controller.latest().outputs.first { it.name == "Motor" }.value, 1e-9)
+        assertTrue(rt.ops.readiness().any { it.id == "groundrun" && it.status == "warn" })
+        cmd(Command.SetMode(Mode.MANUAL))
+        assertFalse("arming ends it", rt.ops.groundRun.running())
+        assertEquals("not_permitted", ops("ground_run") { put("confirmed", true) }.code)
+        cmd(Command.SetMode(Mode.DISARMED))
+        tick()
+        assertEquals(0.0, rt.controller.latest().outputs.first { it.name == "Motor" }.value, 1e-9)
+    }
+
     @Test fun trimLimitsWhileArmedAndForAi() {
         val servo = rt.profiles.active.channels.first { it.kind == ChannelKind.SERVO }.name
         assertEquals("out_of_range", ops("trim_set") { put("output", servo); put("trim", 0.5) }.code)

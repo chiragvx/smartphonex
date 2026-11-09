@@ -203,25 +203,46 @@ Each stage has to pass before the next starts.
    - Signal-to-noise in the live stats, and no learning below `MIC_SNR` + 6 dB (H5). **Built.**
    - A notice in the Arm panel when the microphone is lost, distorting, or hears another propeller (H7). **Built.**
    - Left of H3: with only the blade tones heard, and the fundamental too faint to hear, the reading can still be
-     double. A real motor's own tone usually settles it; the ground run in stage 3 will catch the rest.
+     double. A real motor's own tone usually settles it; the ground run (stage 3) now catches the rest in flight.
+   - Found on the phone while testing stage 3: a laptop fan's 188 Hz tone sat at 3 × half the revolution rate of a
+     7,611 rpm propeller, so half the true rate explained one more peak and won (read 3,805). Fixed: a family is
+     marked down for gaps in its blade series (4, 8, 12 without 6 and 10), which a real propeller doesn't have.
    - **Check against a real rpm, with no extra parts:** a 240 fps slow-motion video from a second phone shows the
      blades. Count frames per revolution.
    - **Gate:** within 2% at 5 throttle steps, on 2 different motors.
-3. **Ground run before each flight:**
-   - A guided 3-step throttle sweep, held 3 s each, with the plane restrained.
-   - It stores the static rpm curve per setup, scales throttle for this battery (A1, A2), and spots a changed setup
-     (A10).
-   - **Gate:** the same pack measured twice agrees within 1%; a full and a half-empty pack are told apart.
-4. **Learning, done properly** (`MIC_PROP` 2):
-   - Level and steady only (A6, A7).
-   - Recent circles only (A8).
-   - Re-learn with forgetting through the flight (A1).
-   - Throttle × rpm validity cells and bounded k values (A9).
+3. **Ground run before each flight.** **Built** (`GroundRun.kt`, Test page, `tools/ground-run.mjs`):
+   - Hold-to-run, disarmed, people only, after confirming the plane is restrained. Steps through `PROP_GR_LO` to
+     `PROP_GR_HI` (30, 45, 60%); each step counts once the speed holds within 1.5% for 1.5 s, about 2.5 s each.
+     Letting go, arming or kill stops the motor at once.
+   - Refuses a step that didn't speed up, never settled, or jumped more than the throttle explains (a harmonic).
+   - The first run per vehicle is the reference. Later runs give this pack's strength (A1), which scales throttle
+     for the airspeed model within 30 minutes. A curve of a different shape (over 3%), or a speed beyond 0.75–1.2×,
+     is a changed setup (A10): it becomes the new reference and learned airspeed is forgotten.
+   - In flight, every reading is checked against the curve (H3). Half or double what fits is corrected; anything
+     else is flagged and not learned from. Shown in the Arm checks as "Ground run".
+   - **Tested on the phone, 2026-11-09,** with synthetic motor sounds from its speaker, beside the laptop fan:
+
+     | Run | Result |
+     |---|---|
+     | Reference (sound: 6,036 / 7,611 / 9,024 rpm) | 6,035 / 7,611 / 9,023 |
+     | Same pack again, sound 0.4% faster | Strength 1.004: agrees within 1% |
+     | Weaker pack, sound 7% slower | Strength 0.930, "Pack 7.0% weaker" |
+     | Different propeller, curve bent 5% | "Setup changed (5.3% off)", new reference |
+
+   - **Gate, still open:** the same on a real motor and two real packs, full and half-empty.
+4. **Learning, done properly** (`MIC_PROP` 2). **Built, unit tested:**
+   - Level and steady only (A6, A7): motor within 2%, ground speed within 1 m/s, and height changing under 0.7 m/s
+     (barometer) or 1.2 m/s (GPS), over 3 s.
+   - Recent circles only (A8): samples older than 6 minutes are dropped.
+   - Re-learn with forgetting through the flight (A1): refits every 50 samples, newer samples weigh more (3 minute
+     time constant), and the ground run's pack strength scales throttle.
+   - Throttle × rpm validity cells (8 × 6, kept in `PROP_CELLS`) and bounded k values (A9): faster spinning at a
+     fixed throttle must mean faster air; implied speeds and wind must be possible.
    - **Gate:** on logged real flights, the fit predicts the next circle's wind-corrected speed within 1.5 m/s.
-5. **Present it honestly** (U2, A3, A4, A5):
-   - "~13 m/s ±2, 8% below your cruise".
-   - Hidden when idle, gliding, or outside what was learned.
-6. **Uses stay as they are:** Operate and the in-flight disarm check. Never throttle, never a stall warning. Revisit
+5. **Present it honestly** (U2, A3, A4, A5). **Built, unit tested:**
+   - "~13 m/s ±2, 8% below your cruise", labelled an estimate, with when it was learned.
+   - Hidden when idle or gliding, outside the learned cells, or slower than it learned, with the reason shown.
+6. **Uses stay as they are:** Operate and the in-flight disarm check. Unchanged, checked. Never throttle, never a stall warning. Revisit
    only after stage 4 has passed on several planes.
 
 The airspeed model's biggest weakness is A1: the battery. If stage 3 can't tell packs apart reliably, stop at motor

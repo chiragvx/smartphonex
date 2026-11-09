@@ -131,6 +131,33 @@ function Reports() {
   );
 }
 
+/** The motor stepped through three throttles while the microphone measures it: the curve flights are checked against. */
+function GroundRun() {
+  const [clear, setClear] = useState(false);
+  const param = (n: string, d: number) => S.params.find(p => p.name === n)?.value ?? d;
+  if (param('MIC_PROP', 0) < 1) return null;
+  const run = S.ops?.groundRun;
+  const prop = S.fcs?.prop;
+  const g = prop?.groundRun;
+  const lo = Math.round(param('PROP_GR_LO', 0.3) * 100), hi = Math.round(param('PROP_GR_HI', 0.6) * 100);
+  const strength = (s: number) => Math.abs(s - 1) < 0.005 ? 'as strong as the reference' : `${(Math.abs(s - 1) * 100).toFixed(1)}% ${s > 1 ? 'stronger' : 'weaker'} than the reference`;
+  return (
+    <Panel title="Ground run">
+      <p class="dim">Before each flight: with the plane restrained, hold the button while the motor steps through {lo}% to {hi}% throttle, about 3 s each. It measures the speed and tones at each step. Flights are checked against them, and the pack's strength is measured. Letting go stops the motor at once.</p>
+      <label class="tick"><input id="grClear" type="checkbox" checked={clear} onChange={e => setClear(e.currentTarget.checked)} />The plane is restrained and everyone is clear of the propeller</label>
+      <HoldToRun label="Hold: ground run" command="ground_run" stop="ground_run_stop" confirmed={clear} disabled={armed() || !isOperator()} />
+      {run && run.state !== 'IDLE' && <p id="grStatus" class={run.state === 'FAILED' ? 'badText' : run.state === 'RUNNING' ? 'warnText' : run.state === 'DONE' ? 'goodText' : 'dim'}>{run.message}{prop?.rpm != null && run.state === 'RUNNING' ? ` (hearing ${prop.rpm} rpm)` : ''}</p>}
+      {g && <div class="dim" id="grStored">
+        <div>Throttle {g.throttles.split(',').join('%, ')}%</div>
+        <div>Reference: {g.referenceRpm.split(',').join(', ')} rpm</div>
+        <div>Latest, {new Date(g.lastAt).toLocaleTimeString()}: {g.lastRpm.split(',').join(', ')} rpm. Pack {strength(g.strength)}</div>
+        {g.changed && <div class="warnText">Setup changed: {g.changed}. Stored as the new reference.</div>}
+        <a href="#" onClick={e => { e.preventDefault(); if (confirm('Forget the ground runs for this vehicle? The next one becomes the reference.')) cmd('ground_run_forget', {}); }}>Forget</a>
+      </div>}
+    </Panel>
+  );
+}
+
 export function TestPage() {
   const ready = S.ops?.readiness ?? [];
   return (
@@ -144,6 +171,7 @@ export function TestPage() {
         <Diagnostics />
         <LinkTest />
         <OutputTests />
+        <GroundRun />
         <Reports />
       </div>
     </div>

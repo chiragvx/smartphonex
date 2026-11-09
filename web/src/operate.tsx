@@ -249,8 +249,11 @@ function Stats() {
   if (prop) {
     rows.push(['Propeller (mic)', prop.rpm != null ? `${prop.rpm} rpm` : prop.status]);
     if (prop.warning) rows.push(['Propeller warning', prop.warning]);
-    if (prop.learned !== undefined) rows.push(['Airspeed (prop)', prop.air != null ? `~${prop.air.toFixed(1)} m/s`
-      : prop.learned ? 'out of learned range' : `learning: ${prop.sectors}/8 directions`]);
+    // An estimate, never an airspeed tube: shown with its error, against this plane's cruise, or with why there's none.
+    if (prop.learned !== undefined) rows.push(['Airspeed estimate (prop)', prop.airText
+      ? `${prop.airText} (learned ${prop.learnedAgo})`
+      : prop.learned ? `none: ${prop.airWhy ?? 'out of learned range'}` : `learning: ${prop.sectors}/8 directions, level and steady flight only`]);
+    if (prop.check && prop.check.startsWith('corrected')) rows.push(['Propeller check', prop.check]);
     if (prop.wind != null) rows.push(['Wind (prop)', `${prop.wind.toFixed(0)} m/s from ${prop.windFrom}°`]);
   }
   return <div class={`stats ${stale() ? 'isStale' : ''}`} id="stats">{rows.map(([k, v]) => <div key={k}><b>{v}</b><i>{k}</i></div>)}</div>;

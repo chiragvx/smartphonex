@@ -4,6 +4,7 @@ import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.hypot
 import kotlin.math.ln
 import kotlin.math.log10
@@ -103,7 +104,7 @@ class PropTone(val sampleRate: Int, val size: Int = 8192) {
         for (p in strong.take(8)) for (m in 1..MAX_HARMONIC) {
             val f = p.hz / m
             if (f < fLo) break
-            if (f <= fHi) family(f, strong)?.let { families += it }
+            if (f <= fHi) family(f, strong, b)?.let { families += it }
         }
         if (families.isEmpty()) return null
         // A family at half the true rate explains the same peaks, so of the near-best take the highest.
@@ -134,8 +135,13 @@ class PropTone(val sampleRate: Int, val size: Int = 8192) {
         return Tone(bladeHz, snr, levelDb, rev, harmonics, strong.map { it.hz }, other, clippedN > size / 1000)
     }
 
-    /** The peaks that are whole multiples of about [f], with [f] refined to fit them best. Null if none fits. */
-    private fun family(f: Double, peaks: List<Peak>): Family? {
+    /**
+     * The peaks that are whole multiples of about [f], with [f] refined to fit them best. Null if none fits.
+     * Scored by the strength of what it explains, less a share for each gap in its blade series: a real propeller's
+     * blade harmonics run without holes, while a base at half the true rate explains them as only every other one
+     * (4, 8, 12 but not 6 or 10), picking up a stray tone at an odd multiple, such as a fan's, by chance.
+     */
+    private fun family(f: Double, peaks: List<Peak>, b: Int): Family? {
         var f0 = f
         var members = emptyList<Pair<Int, Peak>>()
         repeat(2) {
@@ -147,7 +153,14 @@ class PropTone(val sampleRate: Int, val size: Int = 8192) {
             // Least squares fit of f0 to the members: high harmonics pin it down finely.
             f0 = members.sumOf { (h, p) -> p.snrDb * h * p.hz } / members.sumOf { (h, p) -> p.snrDb * h * h }
         }
-        return Family(f0, members.sumOf { it.second.snrDb }, members)
+        val sum = members.sumOf { it.second.snrDb }
+        val blade = members.map { it.first }.filter { it % b == 0 }.toSet()
+        // Only near the bottom of the series, and only holes with blade tones on both sides: high harmonics fade,
+        // and a motor tone's own harmonics can land on blade multiples.
+        val first = blade.minOrNull() ?: 0
+        val near = blade.filter { it <= first + 4 * b }
+        val gaps = if (near.size < 2) 0 else (first..near.max() step b).count { it !in blade }
+        return Family(f0, maxOf(0.0, sum - gaps * sum / members.size), members)
     }
 
     /** Typical level near each bin: the median of its stretch of 64 bins, so a noisy low end doesn't hide quiet highs. */
@@ -255,11 +268,26 @@ class ToneTracker(private val confirm: Int = 3) {
  * sectors), and each sector is weighted equally so the wind cancels. What's left over is fitted as a wind, which
  * also comes out as an estimate.
  *
+ * Learning is kept honest (docs/SPEED_SAFETY.md, stage 4):
+ *  - Only recent samples count ([WINDOW_MS]), the newest most, so the fit follows the battery and the wind through a
+ *    flight. The caller only offers samples from level, steady flight.
+ *  - The fit is valid only in the cells of throttle × motor speed it was learned in: speed and throttle rise together,
+ *    so a fit can match its samples and still be wrong for a combination it never saw.
+ *  - A fit that breaks physics is refused: at a fixed throttle, faster spinning must mean faster air, and the speeds
+ *    and wind it implies must be possible.
+ *
  * Never used to set throttle. See docs/SPEED_SAFETY.md.
  */
 class PropAirspeed {
-    data class Sample(val n: Double, val u: Double, val minutes: Double, val groundMps: Double, val courseDeg: Double)
-    data class Fit(val k: DoubleArray, val rmsMps: Double, val windMps: Double, val windFromDeg: Double, val nMin: Double, val nMax: Double, val samples: Int)
+    data class Sample(val n: Double, val u: Double, val minutes: Double, val groundMps: Double, val courseDeg: Double, val atMs: Long = 0)
+    /**
+     * [cells]: a bit for each cell of throttle × motor speed it learned in (see [cell]). [cruiseMps]: the typical airspeed
+     * it learned, the median. [slowestMps]: the slowest it learned; slower than that is never estimated.
+     */
+    data class Fit(
+        val k: DoubleArray, val rmsMps: Double, val windMps: Double, val windFromDeg: Double, val nMin: Double, val nMax: Double, val samples: Int,
+        val cells: Long = 0L, val cruiseMps: Double = 0.0, val slowestMps: Double = 0.0,
+    )
 
     private val samples = ArrayDeque<Sample>()
     var fit: Fit? = null; private set
@@ -271,6 +299,8 @@ class PropAirspeed {
         if (s.n <= 0 || s.u <= 0.05 || s.groundMps < MIN_GROUND_MPS || !s.groundMps.isFinite()) return
         samples.addLast(s)
         while (samples.size > MAX_SAMPLES) samples.removeFirst()
+        // Only recent circles: the wind and the battery have moved on since older ones.
+        if (s.atMs > 0) while (samples.isNotEmpty() && s.atMs - samples.first().atMs > WINDOW_MS) samples.removeFirst()
     }
 
     fun clear() { samples.clear(); fit = null }
@@ -284,21 +314,48 @@ class PropAirspeed {
         if (perSector.any { it < MIN_PER_SECTOR }) return null
         // Ground speed = airspeed from the propeller + the wind along the course. Both fitted together.
         val rows = samples.map { regressors(it.n, it.u, it.minutes) + doubleArrayOf(cos(rad(it.courseDeg)), sin(rad(it.courseDeg))) }
-        val w = samples.map { 1.0 / perSector[sector(it.courseDeg)] }
+        val newest = samples.maxOf { it.atMs }
+        val w = samples.map { exp(-(newest - it.atMs) / TAU_MS.toDouble()) / perSector[sector(it.courseDeg)] }
         val all = leastSquares(rows, samples.map { it.groundMps }, w) ?: return null
         val k = all.copyOfRange(0, 4)
         val wind = all.copyOfRange(4, 6)
+        // Bounded: faster spinning at the same throttle must mean faster air, and what it implies must be possible.
+        val air = samples.map { dot(k, regressors(it.n, it.u, it.minutes)) }
+        val fastest = samples.maxOf { it.groundMps }
+        if (samples.any { k[1] - (k[2] + k[3] * it.minutes) * it.u / (it.n * it.n) <= 0 }) return null
+        if (air.any { it !in 0.0..(fastest + MAX_WIND_MPS) } || hypot(wind[0], wind[1]) > MAX_WIND_MPS) return null
         var sse = 0.0; var sw = 0.0
         samples.forEachIndexed { i, s -> val e = s.groundMps - dot(all, rows[i]); sse += w[i] * e * e; sw += w[i] }
         // The wind along the course adds to ground speed, so it blows from the opposite direction.
         val windFrom = (Math.toDegrees(atan2(wind[1], wind[0])) + 180 + 360) % 360
-        return Fit(k, sqrt(sse / sw), hypot(wind[0], wind[1]), windFrom, samples.minOf { it.n }, samples.maxOf { it.n }, samples.size).also { fit = it }
+        val nMin = samples.minOf { it.n }; val nMax = samples.maxOf { it.n }
+        var cells = 0L
+        for (s in samples) cells = cells or (1L shl cell(s.n, s.u, nMin, nMax))
+        val sorted = air.sorted()
+        return Fit(k, sqrt(sse / sw), hypot(wind[0], wind[1]), windFrom, nMin, nMax, samples.size, cells, sorted[sorted.size / 2], sorted.first()).also { fit = it }
+    }
+
+    /**
+     * Why there's no estimate at motor speed [n] and throttle [u], or null if there is one. Idle and gliding, outside
+     * the cells it learned in, or slower than it ever learned.
+     */
+    fun whyNot(n: Double, u: Double, minutes: Double): String? {
+        val f = fit ?: return "not learned yet"
+        if (u < IDLE_THROTTLE) return "motor at idle or off: no estimate while gliding"
+        if (n < f.nMin * 0.97 || n > f.nMax * 1.03) return "motor speed outside what it learned"
+        val c = cell(n, u, f.nMin, f.nMax)
+        // The cell itself, or the next motor speed band at the same throttle.
+        val near = listOf(c, c - 1, c + 1).filter { it >= 0 && it / N_CELLS == c / N_CELLS }
+        if (near.none { f.cells and (1L shl it) != 0L }) return "a throttle and motor speed it hasn't learned together"
+        val v = dot(f.k, regressors(n, u, minutes))
+        if (!v.isFinite() || v < f.slowestMps * 0.9) return "slower than it has learned: near a stall the model breaks down"
+        return null
     }
 
     /** Airspeed, or null when there's no fit or the motor speed is outside what the fit has seen. */
     fun airspeed(n: Double, u: Double, minutes: Double): Double? {
         val f = fit ?: return null
-        if (n < f.nMin * 0.85 || n > f.nMax * 1.15 || u <= 0.05) return null
+        if (whyNot(n, u, minutes) != null) return null
         return dot(f.k, regressors(n, u, minutes)).takeIf { it.isFinite() }?.coerceAtLeast(0.0)
     }
 
@@ -307,6 +364,19 @@ class PropAirspeed {
         const val MIN_PER_SECTOR = 10
         const val MAX_SAMPLES = 2000
         const val MIN_GROUND_MPS = 3.0
+        /** Samples older than this are dropped, and within it the newest count most. */
+        const val WINDOW_MS = 6 * 60_000L
+        const val TAU_MS = 3 * 60_000L
+        const val MAX_WIND_MPS = 25.0
+        const val IDLE_THROTTLE = 0.1
+        /** Cells: 8 throttle bands of 1/8, by 6 motor speed bands across the learned range. 48 bits, so a param holds them. */
+        const val U_CELLS = 8
+        const val N_CELLS = 6
+        fun cell(n: Double, u: Double, nMin: Double, nMax: Double): Int {
+            val ub = (u * U_CELLS).toInt().coerceIn(0, U_CELLS - 1)
+            val nb = if (nMax <= nMin) 0 else ((n - nMin) / (nMax - nMin) * N_CELLS).toInt().coerceIn(0, N_CELLS - 1)
+            return ub * N_CELLS + nb
+        }
         fun sector(courseDeg: Double) = (((courseDeg % 360 + 360) % 360) / (360.0 / SECTORS)).toInt().coerceIn(0, SECTORS - 1)
         fun regressors(n: Double, u: Double, minutes: Double) = doubleArrayOf(1.0, n, u / n, u / n * minutes)
         private fun rad(d: Double) = Math.toRadians(d)

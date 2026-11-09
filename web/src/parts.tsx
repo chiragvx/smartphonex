@@ -70,7 +70,7 @@ export function HoldButton({ label, ms, danger, onHeld, id, disabled }: { label:
 }
 
 /** Runs while pressed. If this page dies mid-press, the phone stops it by itself. */
-export function HoldToRun({ label, output, value, confirmed, disabled }: { label: string; output: string; value: number; confirmed: boolean; disabled?: boolean }) {
+export function HoldToRun({ label, output, value, confirmed, disabled, command = 'test_output', stop = 'test_stop' }: { label: string; output?: string; value?: number; confirmed: boolean; disabled?: boolean; command?: string; stop?: string }) {
   const timer = useRef<any>(null);
   const [on, setOn] = useState(false);
   const latest = useRef({ value, confirmed });
@@ -80,10 +80,10 @@ export function HoldToRun({ label, output, value, confirmed, disabled }: { label
     clearInterval(timer.current);
     timer.current = null;
     setOn(false);
-    cmd('test_stop', {}, { quiet: true });
+    cmd(stop, {}, { quiet: true });
   };
   useEffect(() => end, []);
-  const beat = () => cmd('test_output', { output, ...latest.current }, { quiet: true }).then(r => {
+  const beat = () => cmd(command, output === undefined ? { confirmed: latest.current.confirmed } : { output, ...latest.current }, { quiet: true }).then(r => {
     if (!r.accepted && r.code !== 'lost') { end(); addToast(label, 'refused', r.message); }
   });
   return (

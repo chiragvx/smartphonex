@@ -8,7 +8,7 @@ private val OPS_COMMANDS = setOf(
     "test_output", "test_stop", "diagnostics_run", "test_record", "checklist_set", "trim_set", "trim_undo",
     "trigger_save", "trigger_delete", "trigger_prepare", "trigger_fire", "mission_upload", "mission_start",
     "mission_pause", "mission_resume", "mission_skip", "mission_abort", "goto", "fence_set", "home_set", "pose_capture",
-    "face_express", "face_show",
+    "face_express", "face_show", "ground_run", "ground_run_stop", "ground_run_forget",
 )
 
 /** Wire format shared by the WebSocket ground-station link and the MCP tools. */

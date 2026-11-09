@@ -291,17 +291,27 @@ class FlightController(
         if (kq == 0.0 && lastPropKq > 0.0) { propAir.clear(); log.event("prop", "phone", "forgot", "propeller airspeed forgotten") }
         lastPropKq = kq
         if (hz == null || p("MIC_PROP") < 2 || !lastArmed) return@synchronized
+        val heardHz = propHz(now) ?: return@synchronized
+        if (propMismatch()) return@synchronized
         // Learn only from a clean tone: not distorted, not mixed with another propeller, well above the noise.
         if (tone == null || tone.clipped || tone.otherFamily || tone.snrDb < p("MIC_SNR") + 6) return@synchronized
         // Learn only from a fresh, trusted satellite fix, so GPS jumps don't teach it wrong.
         val g = gps ?: return@synchronized
         if (now - g.atMs > 1500 || gpsGuard.estimate(now)?.health != GpsGuard.Health.GOOD) return@synchronized
-        propAir.add(PropAirspeed.Sample(hz / p("PROP_BLADES"), lastOutput.throttle, minutesArmed(now), g.speedMps, g.courseDeg))
+        // Level and steady only: climbing trades airspeed for height, and while speeding up or slowing down the
+        // smoothed tone and the late GPS speed don't line up.
+        val n = heardHz / p("PROP_BLADES")
+        propSteadyLog.addLast(Steady(now, n, g.speedMps, altitudeM(g)))
+        while (propSteadyLog.isNotEmpty() && now - propSteadyLog.first().atMs > STEADY_SPAN_MS) propSteadyLog.removeFirst()
+        if (!steadyAndLevel(now)) return@synchronized
+        propAir.add(PropAirspeed.Sample(n, lastOutput.throttle * packStrength(now), minutesArmed(now), g.speedMps, g.courseDeg, now))
         if (propAir.count % 50 == 0) propAir.refit()?.let { f ->
             if (f.rmsMps <= p("PROP_FIT_RMS")) {
                 val first = p("PROP_KQ") == 0.0
                 listOf("PROP_K0", "PROP_K1", "PROP_K2", "PROP_K3").forEachIndexed { i, n -> params.set(n, f.k[i]) }
                 params.set("PROP_NMIN", f.nMin); params.set("PROP_NMAX", f.nMax); params.set("PROP_KQ", maxOf(f.rmsMps, 0.01))
+                params.set("PROP_CELLS", f.cells.toDouble()); params.set("PROP_CRUISE", f.cruiseMps); params.set("PROP_VMIN", f.slowestMps)
+                propFitAtMs = now
                 if (first) log.event("prop", "phone", "learned", "propeller airspeed learned from ${f.samples} samples, ±${"%.1f".format(f.rmsMps)} m/s; wind ${"%.0f".format(f.windMps)} m/s from ${f.windFromDeg.toInt()}°")
             }
         }
@@ -311,19 +321,73 @@ class FlightController(
     private fun savedPropFit(): PropAirspeed.Fit? {
         val q = p("PROP_KQ")
         if (q <= 0) return null
-        return PropAirspeed.Fit(doubleArrayOf(p("PROP_K0"), p("PROP_K1"), p("PROP_K2"), p("PROP_K3")), q, 0.0, 0.0, p("PROP_NMIN"), p("PROP_NMAX"), 0)
+        return PropAirspeed.Fit(doubleArrayOf(p("PROP_K0"), p("PROP_K1"), p("PROP_K2"), p("PROP_K3")), q, 0.0, 0.0, p("PROP_NMIN"), p("PROP_NMAX"), 0,
+            p("PROP_CELLS").toLong(), p("PROP_CRUISE"), p("PROP_VMIN"))
+    }
+
+    private class Steady(val atMs: Long, val n: Double, val groundMps: Double, val altM: Double)
+    private val propSteadyLog = ArrayDeque<Steady>()
+    /** When the airspeed fit was last updated in this run of the app; 0 when it came from an earlier one. */
+    private var propFitAtMs = 0L
+
+    /** Barometric height when there's a barometer (smoother than GPS), else GPS altitude. */
+    private fun altitudeM(g: GpsFix): Double = pressureHpa?.takeIf { nowMs() - lastBaroWallMs < 2000 }?.let { 44330.0 * (1 - Math.pow(it / 1013.25, 0.1903)) } ?: g.altM
+
+    /** The last [STEADY_SPAN_MS]: motor speed within 2%, ground speed within 1 m/s, and height changing slowly. */
+    private fun steadyAndLevel(now: Long): Boolean {
+        val l = propSteadyLog
+        if (l.size < 5 || now - l.first().atMs < STEADY_SPAN_MS * 0.9) return false
+        if (l.maxOf { it.n } > l.minOf { it.n } * 1.02) return false
+        if (l.maxOf { it.groundMps } - l.minOf { it.groundMps } > 1.0) return false
+        val rate = abs(l.last().altM - l.first().altM) / ((l.last().atMs - l.first().atMs) / 1000.0)
+        return rate <= if (lastBaroWallMs != 0L) 0.7 else 1.2
     }
 
     private fun minutesArmed(now: Long) = if (lastArmed && armedAtMs > 0) (now - armedAtMs) / 60_000.0 else 0.0
 
-    private fun propHz(now: Long) = propTracker.hz?.takeIf { p("MIC_PROP") >= 1 && now - propAtMs < 1000 }
+    /**
+     * The setup's ground runs (GroundRun.kt), set by the runtime for the active vehicle. Its reference curve checks
+     * flight readings for a harmonic mistaken for the fundamental, and the latest run's pack strength scales throttle.
+     */
+    @Volatile var groundRuns: () -> GroundRunStore.Entry? = { null }
+    private var propNote: String? = null
+
+    /** The latest raw reading for the ground run: when it was heard, revolutions per second, and the tone. */
+    fun propSample(): Triple<Long, Double, PropTone.Tone?>? = synchronized(lock) {
+        val hz = propTracker.hz ?: return null
+        if (nowMs() - propAtMs >= 1000) return null
+        Triple(propAtMs, hz / p("PROP_BLADES"), propTone)
+    }
+
+    /**
+     * How strong this pack is next to the reference run's, from a ground run taken in the half hour before arming
+     * (or the last half hour, while disarmed). 1 when there's none.
+     */
+    private fun packStrength(now: Long): Double {
+        val e = groundRuns() ?: return 1.0
+        if (e.comparison.changed) return 1.0
+        val ref = if (lastArmed && armedAtMs > 0) armedAtMs else now
+        return if (ref - e.last.atMs in 0..GroundRun.FRESH_MS) e.comparison.strength else 1.0
+    }
+
+    /** Blade-pass Hz, checked against the ground run while armed, with a harmonic mistake undone. */
+    private fun propHz(now: Long): Double? {
+        val raw = propTracker.hz?.takeIf { p("MIC_PROP") >= 1 && now - propAtMs < 1000 }
+        if (raw == null || !lastArmed) { propNote = null; return raw }
+        val b = p("PROP_BLADES")
+        val (rev, note) = GroundRun.check(raw / b, lastOutput.throttle, groundRuns()?.reference, packStrength(now))
+        propNote = note
+        return rev * b
+    }
+    private fun propMismatch() = propNote?.startsWith("doesn't") == true
 
     /** Airspeed from the propeller, when it's been learned and the motor is in the range it learned. */
     private fun propAirspeed(now: Long): Double? {
         if (p("MIC_PROP") < 2 || p("PROP_KQ") <= 0) return null
         if (propAir.fit == null || propAir.fit?.samples == 0) propAir.restore(savedPropFit())
         val hz = propHz(now) ?: return null
-        return propAir.airspeed(hz / p("PROP_BLADES"), lastOutput.throttle, minutesArmed(now))
+        if (propMismatch()) return null
+        return propAir.airspeed(hz / p("PROP_BLADES"), lastOutput.throttle * packStrength(now), minutesArmed(now))
     }
 
     @Volatile var missions: MissionEngine? = null
@@ -830,10 +894,37 @@ class FlightController(
                     propUnavailable != null -> "microphone lost"
                     t?.clipped == true -> "too loud: the microphone is distorting. Mount the phone further from the propeller"
                     t?.otherFamily == true -> "another propeller or engine is audible"
+                    propMismatch() -> propNote
                     else -> null
                 })
+                put("check", propNote)
+                groundRuns()?.let { e -> putJsonObject("groundRun") {
+                    put("referenceRpm", e.reference.steps.joinToString(",") { Math.round(it.revHz * 60).toString() })
+                    put("lastRpm", e.last.steps.joinToString(",") { Math.round(it.revHz * 60).toString() })
+                    put("throttles", e.last.steps.joinToString(",") { Math.round(it.throttle * 100).toString() })
+                    put("lastAt", e.last.atMs)
+                    put("strength", Math.round(e.comparison.strength * 1000) / 1000.0)
+                    put("inUse", packStrength(now).let { Math.round(it * 1000) / 1000.0 })
+                    put("changed", e.comparison.why)
+                } }
                 if (p("MIC_PROP") >= 2) {
-                    put("air", propAirspeed(now)?.let { r1(it) })
+                    val air = propAirspeed(now)
+                    put("air", air?.let { r1(it) })
+                    // Presented honestly: an estimate, with its error and how it compares with this plane's usual speed,
+                    // or why there's none.
+                    put("airText", air?.let { a ->
+                        val cruise = p("PROP_CRUISE")
+                        val vs = if (cruise > 0) (a / cruise - 1) * 100 else null
+                        "~${Math.round(a)} m/s ±${Math.round(maxOf(1.0, p("PROP_KQ")))}" + when {
+                            vs == null -> ""
+                            abs(vs) < 3 -> ", about your cruise"
+                            else -> ", ${Math.round(abs(vs))}% ${if (vs < 0) "below" else "above"} your cruise"
+                        }
+                    })
+                    put("airWhy", if (air != null || p("PROP_KQ") <= 0) null else propHz(now)?.let { hz ->
+                        if (propMismatch()) propNote else propAir.whyNot(hz / p("PROP_BLADES"), lastOutput.throttle * packStrength(now), minutesArmed(now))
+                    } ?: "no propeller tone")
+                    put("learnedAgo", if (p("PROP_KQ") <= 0) null else if (propFitAtMs > 0) "${(now - propFitAtMs) / 60_000} min ago" else "on an earlier flight")
                     put("learned", p("PROP_KQ") > 0)
                     put("fitRms", p("PROP_KQ").takeIf { it > 0 }?.let { r1(it) })
                     put("samples", propAir.count)
@@ -905,6 +996,7 @@ class FlightController(
         private const val FLY_CONFIRM_MS = 1_000L
         private const val FLY_RELEASE_MS = 3_000L
         private const val PROP_BACKGROUND_MS = 60_000L
+        private const val STEADY_SPAN_MS = 3_000L
         private const val PROP_SPINDOWN_MS = 3_000L
         private const val PROP_BACKGROUND_MAX = 32
         /** How long a tone must hold one pitch, motor still, to count as background. */
