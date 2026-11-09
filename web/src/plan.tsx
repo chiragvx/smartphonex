@@ -71,6 +71,12 @@ function newId(kind: string) {
 const anchor = (s: Step): LL | undefined => s.at ?? s.center ?? s.area?.[0] ?? s.path?.[0] ?? s.points?.[s.points.length - 1];
 
 type Tool = 'goto' | 'survey' | 'corridor' | 'orbit' | 'hold' | 'land' | 'zone-landing' | 'zone-ditch' | 'home' | 'fence' | 'keepout' | 'anchor';
+/** The tools, in the groups the toolbar shows them in. */
+const TOOL_GROUPS: [string, Tool[]][] = [
+  ['Route', ['goto', 'survey', 'corridor', 'orbit', 'hold', 'land']],
+  ['Safety', ['zone-landing', 'zone-ditch', 'fence', 'keepout']],
+  ['Place', ['home', 'anchor']],
+];
 const TOOLS: [Tool, string, string][] = [
   ['goto', 'Point', 'Click to add a point after the selected step. Drag anything to move it; click + on a leg to insert.'],
   ['survey', 'Survey', 'Click the corners of the area, then Finish.'],
@@ -434,24 +440,56 @@ function MapPlan() {
   const num = (v: string) => (v === '' ? undefined : Number(v));
   const toolHelp = TOOLS.find(t => t[0] === tool)?.[2] ?? '';
   const drawingNow = (tool === 'survey' || tool === 'corridor' || tool === 'keepout') && drawing.current.length > 0;
+  // Keys: Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z), Enter finishes drawing, Escape cancels it, Delete removes the selected step.
+  const keys = useRef<{ undo: () => void; redo: () => void; finish: (() => void) | null; cancel: () => void; remove: (() => void) | null }>(null as any);
+  keys.current = {
+    undo, redo, finish: drawingNow ? finishDrawing : null,
+    cancel: () => { if (drawing.current.length) { drawing.current = []; refresh(); } else if (picked) setPicked(null); else setSel(-1); },
+    remove: sel >= 0 && sel < plan.steps.length ? () => { edit(() => { plan.steps.splice(sel, 1); }); setSel(-1); } : null,
+  };
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (t.closest('input, textarea, select, [contenteditable]')) return;
+      const k = keys.current;
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.key.toLowerCase() === 'z' && !e.shiftKey) k.undo();
+      else if (mod && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) k.redo();
+      else if (e.key === 'Enter' && k.finish) k.finish();
+      else if (e.key === 'Escape') k.cancel();
+      else if ((e.key === 'Delete' || e.key === 'Backspace') && k.remove) k.remove();
+      else return;
+      e.preventDefault();
+    };
+    addEventListener('keydown', h);
+    return () => removeEventListener('keydown', h);
+  }, []);
   const stepProblems = (id: string) => (checked?.problems ?? []).filter(p => p.step?.split('#')[0] === id).length;
 
   return (
     <div class="plan">
       <div class="mainView">
-        <div class="viewBar">
-          {TOOLS.filter(([id]) => plane || id !== 'land').map(([id, name]) => (
-            <button key={id} data-tool={id} class={tool === id ? 'sel' : ''} onClick={() => { setTool(id); drawing.current = []; refresh(); }}>{name}</button>
+        <div class="viewBar toolbar">
+          {TOOL_GROUPS.map(([group, ids]) => (
+            <div class="toolGroup" key={group} role="group" aria-label={group}>
+              <span class="toolLabel">{group}</span>
+              {ids.filter(id => plane || id !== 'land').map(id => (
+                <button key={id} data-tool={id} class={tool === id ? 'sel' : ''} onClick={() => { setTool(id); drawing.current = []; refresh(); }}>{TOOLS.find(t => t[0] === id)![1]}</button>
+              ))}
+            </div>
           ))}
-          <button onClick={undo} disabled={!undoStack.length}>Undo</button>
-          <button onClick={redo} disabled={!redoStack.length}>Redo</button>
-          <button id="view3d" class={show3d ? 'sel' : ''} disabled={!checked?.path.length} onClick={() => setShow3d(!show3d)}>3D</button>
-          <button id="newPlan" disabled={!plan.steps.length && !(plan.zones ?? []).length} onClick={() => { edit(() => { draft.plan = emptyPlan(); }); setSel(-1); setChecked(null); }}>New plan</button>
+          <span class="grow" />
+          <div class="toolGroup">
+            <button onClick={undo} disabled={!undoStack.length} title="Ctrl+Z">Undo</button>
+            <button onClick={redo} disabled={!redoStack.length} title="Ctrl+Y">Redo</button>
+            <button id="view3d" class={show3d ? 'sel' : ''} disabled={!checked?.path.length} onClick={() => setShow3d(!show3d)}>3D</button>
+            <button id="newPlan" disabled={!plan.steps.length && !(plan.zones ?? []).length} onClick={() => { if (!plan.steps.length || confirm('Start a new plan? The steps and zones here are cleared (Undo brings them back).')) { edit(() => { draft.plan = emptyPlan(); }); setSel(-1); setChecked(null); } }}>New plan</button>
+          </div>
         </div>
         <div class="mapwrap">
           <canvas ref={ref} id="planMap" />
           <LayerSwitch map={map.current} />
-          <div class="onmap dim">{toolHelp}</div>
+          <div class="onmap dim">{toolHelp}{drawingNow && ' Enter finishes, Escape cancels.'}</div>
           {show3d && checked && <View3D c={checked} zones={plan.zones ?? []} onClose={() => setShow3d(false)} />}
           {drawingNow && <div class="mapActions">
             <button class="sel" id="finishDrawing" onClick={finishDrawing}>Finish ({drawing.current.length})</button>

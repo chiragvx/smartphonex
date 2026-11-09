@@ -8,7 +8,7 @@ function Device() {
   const setup = S.setup;
   const [text, setText] = useState('');
   return (
-    <Panel title="Device">
+    <Panel id="sec-device" title="Device">
       <label>This phone controls
         <select id="profileSelect" value={S.tel?.profile} disabled={!isOperator()} onChange={e => cmd('select_profile', { id: e.currentTarget.value }, { label: 'Choose device' }).then(r => { if (r.accepted) setTimeout(() => location.reload(), 300); })}>
           {profiles.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -43,7 +43,7 @@ function Assistant() {
   const f = form ?? cfg;
   const say = () => { if (!text.trim()) return; S.assistantBusy = true; S.assistant = [...S.assistant, { role: 'user', text }]; raw({ type: 'assistant_say', text }); setText(''); };
   return (
-    <Panel title="Setup assistant">
+    <Panel id="sec-setup-assistant" title="Setup assistant">
       <details>
         <summary>{cfg.model} · {cfg.hasKey ? 'key saved' : 'no key yet'}</summary>
         <label>Kind <select value={f.kind} onChange={e => setForm({ ...f, kind: e.currentTarget.value })}><option value="anthropic">Anthropic</option><option value="openai">OpenAI-compatible</option></select></label>
@@ -69,7 +69,7 @@ function Trim() {
   const step = isArmed ? 0.01 : 0.005;
   const set = (name: string, body: Record<string, unknown>) => cmd('trim_set', { output: name, ...body }, { label: `Trim ${name}` });
   return (
-    <Panel title="Trim">
+    <Panel id="sec-trim" title="Trim">
       <p class="dim">{isArmed ? 'Armed: small steps only.' : 'Saved at once, per device.'}</p>
       <div id="trims">
         {names.map(n => {
@@ -116,7 +116,7 @@ function Triggers() {
     } }, { label: 'Save trigger' }).then(r => { if (r.accepted) setF(null); });
   };
   return (
-    <Panel title="Triggers" right={isOperator() && <button id="addTrigger" onClick={() => setF({ ...blank })}>Add</button>}>
+    <Panel id="sec-triggers" title="Triggers" right={isOperator() && <button id="addTrigger" onClick={() => setF({ ...blank })}>Add</button>}>
       <div class="list">
         {list.map(t => (
           <div class="item" key={t.id}>
@@ -158,7 +158,7 @@ function Settings() {
   const groups = [...new Set<string>(list.map(p => p.group))];
   const history = S.paramHistory;
   return (
-    <Panel title="Settings">
+    <Panel id="sec-settings" title="Settings">
       <input id="paramSearch" placeholder="Search settings" value={q} onInput={e => setQ(e.currentTarget.value)} />
       {groups.map(g => (
         <details key={g} open={!!q}>
@@ -188,7 +188,7 @@ function Sensors() {
   const c = S.config;
   const list: any[] = c?.sensors ?? [];
   return (
-    <Panel title="Sensors">
+    <Panel id="sec-sensors" title="Sensors">
       <label>Data budget, kbps (0 is none) <input id="budget" type="number" value={c?.budgetKbps ?? 0} disabled={!isOperator()} onChange={e => raw({ type: 'budget', kbps: Number(e.currentTarget.value) })} /></label>
       <div id="sensorList">
         {list.map(s => (
@@ -210,7 +210,7 @@ function Camera() {
   const list: any[] = c.cameras ?? [];
   const current = list.find(x => x.id === cam.cameraId);
   return (
-    <Panel title="Camera">
+    <Panel id="sec-camera" title="Camera">
       <label class="tick"><input type="checkbox" checked={cam.enabled} onChange={e => raw({ type: 'camera_cfg', enabled: e.currentTarget.checked })} />On</label>
       <label>Camera <select value={cam.cameraId} onChange={e => raw({ type: 'camera_cfg', cameraId: e.currentTarget.value })}>{list.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}</select></label>
       <label>Size <select value={`${cam.width}x${cam.height}`} onChange={e => { const [w, h] = e.currentTarget.value.split('x').map(Number); raw({ type: 'camera_cfg', width: w, height: h }); }}>{(current?.sizes ?? [`${cam.width}x${cam.height}`]).map((s: string) => <option key={s} value={s}>{s}</option>)}</select></label>
@@ -233,7 +233,7 @@ function Connect() {
     setNote(`Works once, for ${Math.floor(b.expiresInSeconds / 60)} minutes.${b.encrypted ? '' : ' This address is not encrypted, so a phone on another network will not accept it.'}`);
   };
   return (
-    <Panel title="Connect">
+    <Panel id="sec-connect" title="Connect">
       {S.relay ? <>
         <p class="dim">Show a phone this code to link it to this relay.</p>
         {isOperator() && <button id="enrollBtn" onClick={newCode}>Show QR code</button>}
@@ -264,7 +264,7 @@ function Backup() {
     setBusy(false);
   };
   return (
-    <Panel title="Backup">
+    <Panel id="sec-backup" title="Backup">
       <p class="dim">Settings, devices, missions and logs in one file. Secrets stay on the phone: its access token, AI key and relay link.</p>
       <div class="row">
         <a class="btn" id="backupBtn" href={q(false)} download>Download backup</a>
@@ -301,7 +301,7 @@ function AppHealth() {
   const when = (t: number) => new Date(t).toLocaleString();
   const u = h?.update;
   return (
-    <Panel title="App health">
+    <Panel id="sec-app-health" title="App health">
       {!h ? <p class="dim">Loading...</p> : <>
         {u?.enabled && <div class="row" id="updateRow">
           <span class="grow">{u.newer ? <b>Version {u.latest} is out.</b> : u.error ? <span class="dim">Couldn't check for updates: {u.error}</span> : u.checked ? `Up to date (${u.current})` : 'Not checked yet'}
@@ -324,11 +324,20 @@ function AppHealth() {
   );
 }
 
+const SECTIONS: [string, string][] = [['device', 'Device'], ['setup-assistant', 'Assistant'], ['trim', 'Trim'], ['triggers', 'Triggers'], ['settings', 'Settings'], ['sensors', 'Sensors'], ['camera', 'Camera'], ['connect', 'Connect'], ['backup', 'Backup'], ['app-health', 'App health']];
+
 export function Setup() {
   return (
+    <>
+    <nav class="jump" aria-label="Setup sections">
+      {SECTIONS.filter(([id]) => !S.relay || (id !== 'backup' && id !== 'app-health')).map(([id, name]) => (
+        <a key={id} href={`#sec-${id}`} onClick={e => { e.preventDefault(); document.getElementById(`sec-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}>{name}</a>
+      ))}
+    </nav>
     <div class="pageCols">
       <div><Device /><Assistant /><Trim /><Connect />{!S.relay && <Backup />}{!S.relay && <AppHealth />}</div>
       <div><Triggers /><Settings /><Sensors /><Camera /></div>
     </div>
+    </>
   );
 }

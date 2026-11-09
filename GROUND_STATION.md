@@ -26,7 +26,15 @@ Status: **Phase 1 is built** (app build 10). Section 14 lists what's been tested
 | **Review** | Learn from a run | Logs, synced charts and video, track replay, events, export |
 | **Fleet** (Phase 2) | See everything | All devices, map, health, who's in control |
 
-Always on screen, in all of them: device name, armed state, control owner, link quality, battery, active alerts, and **STOP**.
+Always on screen, in all of them: device name, armed state (with time armed), whether it's ready to arm, mode, control owner, GPS quality, battery, link quality, active alerts, and **STOP**.
+
+How the screens are laid out:
+
+- **Operate:** the map or video carries height above home, speed, distance and direction home, and flight time left, beside the horizon. The side column puts what matters in a run first: arm (with a Ready or "n to fix" badge), mission, safety, mode and triggers. Face, all numbers, outputs and joints close to their title, and each browser remembers which are open.
+- **Plan:** tools are grouped as Route, Safety and Place. Keys: Ctrl+Z and Ctrl+Y undo and redo, Enter finishes an outline, Escape cancels it or clears the selection, Delete removes the selected step. A new plan asks first.
+- **Setup:** a row of section links stays at the top.
+- **The ⋯ menu:** alert sounds, sunlight colours (light and high contrast, kept per browser), and the classic screen.
+- Keyboard focus always shows, and on touch screens every control is at least 44 px high.
 
 ## 3. How it adapts to any device
 

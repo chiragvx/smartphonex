@@ -116,7 +116,7 @@ await mouse('mousePressed', r0.x + r0.w / 2, r0.y + 10);
 await sleep(500);
 const thr = await js(`document.querySelector('#outputs .joint b').textContent`);
 check('On-screen stick moves an output', parseInt(thr) > 1500, thr);
-check('Control shows a person', /ground/i.test(await text('#ownerState')), await text('#ownerState'));
+check('Control shows a person', await until(async () => /ground/i.test(await text('#ownerState')), 3000), await text('#ownerState'));
 await mouse('mouseReleased', r0.x + r0.w / 2, r0.y + 10);
 await click('#stop');
 check('STOP disarms in one tap', await until(async () => (await arm()) === 'Disarmed'), await arm());
@@ -132,7 +132,7 @@ check('Space stops', await until(async () => (await arm()) === 'Disarmed'));
 // Kill.
 await slide();
 await until(async () => (await arm()) === 'ARMED');
-await js(`document.querySelector('details summary').click()`);
+await js(`document.querySelector('#killBox summary').click()`);
 await sleep(100);
 await hold('#kill', 500);
 check('A short press does not kill', (await arm()) === 'ARMED', await arm());

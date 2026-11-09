@@ -115,6 +115,8 @@ private class Frame(rt: VehicleRuntime, val slow: Slow?) {
     val attitude = rt.fc.attitudeNow
     val test = rt.ops.tester.active()
     val mission = rt.ops.missions
+    val nav = rt.fc.navEstimate()
+    val height = rt.fc.heightAboveHome()
 }
 
 /** The parts that are costlier to work out, refreshed twice a second. */
@@ -275,6 +277,19 @@ private fun TopBar(rt: VehicleRuntime, f: Frame) {
             Text(label, color = Color.Black, fontWeight = FontWeight.Bold, modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(color).padding(horizontal = 10.dp, vertical = 4.dp))
         }
         Text("${modeLabel(f.fm)}  ·  In control: ${f.owner?.name?.lowercase() ?: "nobody"}" + (f.t.failsafeReason?.let { "  ·  $it" } ?: ""), fontSize = 13.sp)
+        // The few things a person checks at a glance: position, height, battery, and whether it can arm.
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            val n = f.nav
+            val gpsGood = n?.health == GpsGuard.Health.GOOD
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Dot(if (n == null) Off else if (gpsGood) Good else Warn); Spacer(Modifier.width(4.dp))
+                Text(if (n == null) "No GPS" else if (gpsGood) "GPS ±%.0f m".format(n.radiusM) else "GPS ${n.health.name.lowercase()}", fontSize = 13.sp)
+            }
+            f.height?.let { Text("%.0f m up".format(it), fontSize = 13.sp) }
+            Text(rt.fc.batteryText().removeSuffix(" battery"), fontSize = 13.sp)
+            val fails = f.slow?.readiness?.count { it.status == "fail" } ?: 0
+            if (!f.armed && !f.killed) Text(if (fails == 0) "Ready to arm" else "$fails to fix", color = if (fails == 0) Good else Warn, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        }
         if (camLive || locLive) Text(listOfNotNull("CAMERA LIVE".takeIf { camLive }, "LOCATION SHARED".takeIf { locLive }).joinToString("  ·  "), color = Bad, fontWeight = FontWeight.Bold, fontSize = 13.sp)
     }
 }
@@ -311,6 +326,10 @@ private fun HomeTab(activity: MainActivity, rt: VehicleRuntime, f: Frame) {
     Card {
         val fails = slow.readiness.filter { it.status == "fail" }
         val warns = slow.readiness.filter { it.status == "warn" }
+        Text(
+            when { f.armed -> "Armed"; fails.isEmpty() -> "Ready to arm"; fails.size == 1 -> "1 thing to fix before arming"; else -> "${fails.size} things to fix before arming" },
+            fontWeight = FontWeight.Bold, fontSize = 16.sp, color = if (f.armed) Warn else if (fails.isEmpty()) Good else MaterialTheme.colorScheme.onSurface,
+        )
         if (f.armed) {
             OutlinedButton(onClick = { ctx.say(rt.local(Command.SetMode(Mode.DISARMED))) }, modifier = Modifier.fillMaxWidth().height(56.dp)) { Text("Disarm", fontSize = 18.sp) }
         } else {

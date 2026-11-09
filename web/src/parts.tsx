@@ -16,12 +16,32 @@ export function CheckRow({ c }: { c: Pick<Check, 'label' | 'status' | 'detail' |
   );
 }
 
-export const Panel = ({ title, children, right }: { title?: string; children: ComponentChildren; right?: ComponentChildren }) => (
-  <section class="panel">
-    {(title || right) && <header><h2>{title}</h2>{right}</header>}
-    {children}
-  </section>
-);
+const openKey = (id: string) => `spx-open-${id}`;
+const readOpen = (id: string, dflt: boolean) => { try { const v = localStorage.getItem(openKey(id)); return v === null ? dflt : v === '1'; } catch { return dflt; } };
+
+/** A card. With `fold`, it can be closed to its title, and remembers that per browser. */
+export function Panel({ title, children, right, fold, closed, id }: { title?: string; children: ComponentChildren; right?: ComponentChildren; fold?: string; closed?: boolean; id?: string }) {
+  const [open, setOpen] = useState(() => (fold ? readOpen(fold, !closed) : true));
+  if (!fold) return (
+    <section class="panel" id={id}>
+      {(title || right) && <header><h2>{title}</h2>{right}</header>}
+      {children}
+    </section>
+  );
+  return (
+    <details class="panel fold" id={id} open={open} onToggle={e => { const o = (e.currentTarget as HTMLDetailsElement).open; setOpen(o); try { localStorage.setItem(openKey(fold), o ? '1' : '0'); } catch { /* Fine. */ } }}>
+      <summary><h2>{title}</h2>{right}</summary>
+      {children}
+    </details>
+  );
+}
+
+/** Light, high-contrast colours for reading in sunlight. Saved per browser. */
+export function getSun() { try { return localStorage.getItem('spx-sun') === '1'; } catch { return false; } }
+export function applySun(on: boolean) {
+  document.documentElement.dataset.theme = on ? 'sun' : '';
+  try { localStorage.setItem('spx-sun', on ? '1' : '0'); } catch { /* Fine. */ }
+}
 
 /** Slide to arm: a plain click can't do it. */
 export function SlideToArm({ label, onDone }: { label: string; onDone: () => void }) {

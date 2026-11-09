@@ -5,6 +5,7 @@ import { canAct, CheckRow, fmt, HoldButton, Horizon, LayerSwitch, modeLabel, Pan
 import { drawHome, drawPlan, drawVehicle, type TileMap } from './map';
 
 const trail: { lat: number; lon: number }[] = [];
+const mmss = (s: number) => { const t = Math.max(0, Math.round(s)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; };
 
 export function firePrepared(t: { id: string; label: string }) {
   cmd('trigger_prepare', { id: t.id }, { quiet: true }).then(r => { if (r.accepted) cmd('trigger_fire', { id: t.id }, { label: t.label }); });
@@ -75,6 +76,23 @@ function MapView({ goHere }: { goHere: boolean }) {
 }
 const goHereRef = { on: false };
 
+/** The numbers a pilot looks for, over the map or video: height, speed, way home, time left. */
+function Readout() {
+  const f = S.fcs;
+  const gps = f?.gps;
+  const home = f?.home;
+  const left = S.ops?.timeLeftS;
+  const arrow = home?.bearing != null ? { transform: `rotate(${home.bearing - (S.fc?.a?.[2] ?? 0)}deg)` } : undefined;
+  return (
+    <div class={`readout ${stale() ? 'isStale' : ''}`} id="readout">
+      <div><i>Height</i><b>{home?.height != null ? `${Math.round(home.height) || 0} m` : '--'}</b></div>
+      <div><i>Speed</i><b>{gps ? `${gps.speed.toFixed(1)} m/s` : '--'}</b></div>
+      <div><i>Home</i><b>{home?.dist != null ? <>{home.dist < 1000 ? `${home.dist.toFixed(0)} m` : `${(home.dist / 1000).toFixed(2)} km`} {arrow && <span class="homeArrow" style={arrow} title="Way home, from where it points">↑</span>}</> : 'not set'}</b></div>
+      {left !== undefined && <div><i>Time left</i><b class={left < 60 ? 'badText' : left < 180 ? 'warnText' : ''}>{mmss(left)}</b></div>}
+    </div>
+  );
+}
+
 function VideoView() {
   const v = S.video;
   const on = !!S.config?.camera?.enabled;
@@ -94,8 +112,9 @@ function ArmPanel() {
   const isArmed = armed();
   if (!isOperator()) return null;
   const fails = ops?.readiness.filter(c => c.status === 'fail') ?? [];
+  const sum = isArmed ? null : fails.length ? <span class="pill warn">{fails.length} to fix</span> : <span class="pill good">Ready</span>;
   return (
-    <Panel title="Arm">
+    <Panel title={isArmed ? 'Armed' : 'Arm'} right={sum}>
       {isArmed
         ? <button id="disarm" class="big" onClick={() => cmd('set_mode', { mode: 'DISARMED' }, { label: 'Disarm' })}>Disarm</button>
         : fails.length === 0
@@ -103,7 +122,7 @@ function ArmPanel() {
           : fails.map(c => <CheckRow key={c.id} c={c} />)}
       {ops?.readiness.filter(c => c.status === 'warn').map(c => <CheckRow key={c.id} c={c} />)}
       {S.fcs?.prop?.warning && <CheckRow c={{ label: 'Propeller sensor', status: 'warn', detail: S.fcs.prop.warning, fix: 'Its airspeed and rpm readings are not trusted until this clears.' }} />}
-      <details>
+      <details id="killBox">
         <summary>Kill</summary>
         <p class="dim">Cuts every output at once, with no glide or slow-down.</p>
         <HoldButton id="kill" label="Hold 2 s to kill" ms={2000} danger onHeld={() => cmd('kill', {}, { label: 'Kill' })} />
@@ -129,8 +148,6 @@ function ModePanel() {
     </Panel>
   );
 }
-
-const mmss = (s: number) => { const t = Math.max(0, Math.round(s)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; };
 
 function MissionPanel() {
   const m = S.ops?.mission;
@@ -174,7 +191,7 @@ function SimPanel() {
   if (!s || !isOperator()) return null;
   const set = (args: Record<string, unknown>, label: string) => cmd('sim_set', args, { label });
   return (
-    <Panel title="Simulation">
+    <Panel title="Simulation" fold="sim">
       <p class="dim small">{s.onGround ? (s.crashed ? 'Crashed on landing.' : 'On the ground. Starting a plan launches it by hand.') : `Flying at ${s.airspeed} m/s, ${s.heightM} m up.`}</p>
       <div class="grid2">
         <label>Wind, m/s <input type="number" min="0" max="30" value={s.windMps} onChange={e => set({ windMps: Number(e.currentTarget.value) }, 'Wind')} /></label>
@@ -222,7 +239,7 @@ function FacePanel() {
   const hue = param('FACE_HUE') ?? 190;
   const status = face.blocked ? `Can't show: ${face.blocked}` : face.shown ? `Showing${face.requested ? `: ${face.requested}${face.held ? ', held' : ''}` : ''}` : 'Hidden';
   return (
-    <Panel title="Face" right={<span id="faceStatus" class={`pill ${face.blocked ? 'warn' : face.shown ? 'good' : 'off'}`}>{status}</span>}>
+    <Panel title="Face" fold="face" closed right={<span id="faceStatus" class={`pill ${face.blocked ? 'warn' : face.shown ? 'good' : 'off'}`}>{status}</span>}>
       <div class="row">
         <button id="faceShow" onClick={() => cmd('face_show', { show: true }, { label: 'Show face' })}>Show</button>
         <button id="faceHide" onClick={() => cmd('face_show', { show: false }, { label: 'Hide face' })}>Hide</button>
@@ -258,7 +275,7 @@ function SkillsPanel() {
   const caps = S.hello?.caps;
   if (!isOperator() || (!caps?.skills?.length && !caps?.behaviors?.length)) return null;
   return (
-    <Panel title="Skills">
+    <Panel title="Skills" fold="skills">
       <div class="chips">
         {caps.skills.map((id: string) => <button key={id} onClick={() => cmd('run_skill', { id }, { label: id })}>{id}</button>)}
         {caps.skills.length > 0 && <button onClick={() => cmd('stop_skill', {}, { label: 'Stop skill' })}>Stop skill</button>}
@@ -273,7 +290,7 @@ function Joints() {
   const d = S.device;
   if (!d?.actuators?.length) return null;
   return (
-    <Panel title="Joints" right={d.hardwareOpen ? <span class="pill warn">Hardware live</span> : <span class="pill off">Preview</span>}>
+    <Panel title="Joints" fold="joints" right={d.hardwareOpen ? <span class="pill warn">Hardware live</span> : <span class="pill off">Preview</span>}>
       <div class="joints" id="joints">
         {d.actuators.map((a: any) => {
           const f = (a.value - a.min) / (a.max - a.min || 1);
@@ -310,7 +327,11 @@ function Stats() {
     if (prop.check && prop.check.startsWith('corrected')) rows.push(['Propeller check', prop.check]);
     if (prop.wind != null) rows.push(['Wind (prop)', `${prop.wind.toFixed(0)} m/s from ${prop.windFrom}°`]);
   }
-  return <div class={`stats ${stale() ? 'isStale' : ''}`} id="stats">{rows.map(([k, v]) => <div key={k}><b>{v}</b><i>{k}</i></div>)}</div>;
+  return (
+    <Panel title="All numbers" fold="numbers" closed>
+      <div class={`stats ${stale() ? 'isStale' : ''}`} id="stats">{rows.map(([k, v]) => <div key={k}><b>{v}</b><i>{k}</i></div>)}</div>
+    </Panel>
+  );
 }
 
 function Outputs() {
@@ -319,7 +340,7 @@ function Outputs() {
   const out = S.tel?.out ?? [];
   if (!names.length) return null;
   return (
-    <Panel title="Outputs">
+    <Panel title="Outputs" fold="outputs" closed>
       <div class="joints" id="outputs">
         {names.map((n, i) => (
           <div key={n} class="joint"><span>{n}</span><div class="bar"><i style={{ width: `${Math.max(0, Math.min(1, ((out[i]?.[1] ?? 1500) - 1000) / 1000)) * 100}%` }} /></div><b>{out[i]?.[1] ?? '--'} µs</b></div>
@@ -348,16 +369,17 @@ export function Operate() {
           {hasMap && view === 'map' && canAct() && <button class={goHere ? 'sel' : ''} onClick={() => setGoHere(!goHere)}>{goHere ? 'Tap the map...' : 'Go here'}</button>}
         </div>
         {view === 'map' && hasMap ? <MapView goHere={goHere} /> : <VideoView />}
+        <Readout />
         <div class="hud"><Horizon roll={fc?.a?.[0] ?? 0} pitch={fc?.a?.[1] ?? 0} heading={fc?.a?.[2]} stale={stale()} /></div>
         {isOperator() && armed() && <Sticks surfaces={!!surfaces} />}
       </div>
       <aside class="side">
         <ArmPanel />
-        <ModePanel />
         <MissionPanel />
         <SafetyPanel />
-        <SimPanel />
+        <ModePanel />
         <TriggersPanel />
+        <SimPanel />
         <FacePanel />
         <SkillsPanel />
         <Stats />

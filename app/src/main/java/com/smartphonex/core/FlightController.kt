@@ -1180,6 +1180,7 @@ class FlightController(
                 home?.let { h ->
                     putJsonObject("home") {
                         put("lat", h.lat); put("lon", h.lon)
+                        heightAboveHome()?.let { put("height", r1(it)) }
                         gps?.let { g ->
                             put("dist", r1(Navigation.distanceM(g.lat, g.lon, h.lat, h.lon)))
                             put("bearing", r1(Navigation.bearingDeg(g.lat, g.lon, h.lat, h.lon)))
