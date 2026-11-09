@@ -538,6 +538,75 @@ class OpsRuntimeTest {
         assertEquals(hash, again.missions.mission?.hash)
     }
 
+    private fun zonedPlan(linkLoss: String = "home") = buildJsonObject {
+        put("format", PlanCompiler.FORMAT); put("onLinkLoss", linkLoss)
+        putJsonArray("zones") { addJsonObject { put("id", "yard"); put("kind", "landing"); put("at", buildJsonArray { add(north(560.0)); add(LON) }); put("radius", 20.0) } }
+        putJsonArray("steps") { addJsonObject { put("do", "goto"); put("at", buildJsonArray { add(north(600.0)); add(LON) }) }; addJsonObject { put("do", "home") } }
+    }
+    private fun startZoned(linkLoss: String = "home") {
+        gps()
+        assertNull(rt.fc.setHomeHere())
+        assertTrue(ops("plan_upload") { put("plan", zonedPlan(linkLoss)) }.accepted)
+        assertEquals("home and the plan's zone travel with it", listOf("home", "yard"), rt.ops.missions.mission!!.zones.map { it.id })
+        assertTrue(ops("mission_start").accepted)
+        tick(2)
+    }
+
+    @Test fun runningOutOfTimeOnAMissionGoesToTheBestZoneItCanReach() {
+        startZoned()
+        gps(north(500.0))
+        // One minute's flying, 20% kept: 48 s at 2 m/s reaches 96 m. Home is 500 m away, the yard 40.
+        rt.params.set("PLAN_ENDURANCE", 1.0)
+        rt.ops.tick(rt.controller.tick(0.01))
+        assertEquals(FlightMode.RETURN_HOME, rt.fc.mode)
+        assertEquals("yard", rt.fc.divert?.id)
+        assertEquals(MissionEngine.State.ABORTED, rt.ops.missions.state)
+        assertTrue(rt.log.allEvents().any { it.code == "divert" && "flight time" in it.message })
+        assertEquals("yard", rt.ops.opsJson(true)["divert"]!!.jsonObject["zone"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun losingTheLinkGoesHomeWhenItCanMakeIt() {
+        startZoned()
+        gps(north(500.0))
+        val t = rt.controller.tick(0.01)
+        rt.ops.tick(t.copy(t = t.t + 5_000))
+        assertEquals(FlightMode.RETURN_HOME, rt.fc.mode)
+        assertEquals("home is within reach on the time left", "home", rt.fc.divert?.id)
+    }
+
+    @Test fun pastTheOuterLimitItGoesToSafety() {
+        assertTrue(ops("fence_set") { put("fence", buildJsonObject { put("maxDistM", 100.0); put("outerM", 50.0); put("action", "warn") }) }.accepted)
+        gps()
+        assertNull(rt.fc.setHomeHere())
+        assertTrue(cmd(Command.SetMode(Mode.MANUAL)).accepted)
+        gps(north(130.0))
+        rt.ops.tick(rt.controller.tick(0.01))
+        assertNull("over the fence, inside the outer limit: only the fence's own action", rt.fc.divert)
+        gps(north(200.0))
+        rt.ops.tick(rt.controller.tick(0.01))
+        assertTrue(rt.log.allEvents().any { it.code == "outer" })
+        assertEquals("home", rt.fc.divert?.id)
+    }
+
+    @Test fun aPlaneTurnsBackBeforeTheFenceNotAtIt() {
+        rt.profiles.select("plane")
+        assertTrue(ops("fence_set") { put("fence", buildJsonObject { put("maxDistM", 300.0); put("action", "home") }) }.accepted)
+        gps()
+        assertNull(rt.fc.setHomeHere())
+        assertTrue(cmd(Command.SetMode(Mode.MANUAL)).accepted)
+        fun flyNorthAt(m: Double) {
+            rt.fc.gpsGuard.reset()
+            repeat(GpsGuard.SETTLE_FIXES + 2) { rt.fc.onGps(GpsFix(north(m), LON, 260.0, 15.0, 0.0, 3.0, 10, System.currentTimeMillis()), null) }
+            rt.ops.tick(rt.controller.tick(0.01))
+        }
+        // At 15 m/s and 30° of bank it needs about 80 m to turn round.
+        flyNorthAt(180.0)
+        assertEquals(FlightMode.MANUAL, rt.fc.mode)
+        flyNorthAt(235.0)
+        assertEquals("65 m short of the fence, heading out: turning back now", FlightMode.RETURN_HOME, rt.fc.mode)
+        assertTrue(rt.log.allEvents().any { it.code == "fence" && "heading out" in it.message })
+    }
+
     @Test fun aPlaneFliesOnlyCheckedPlansAndOnlyWhenAllowed() {
         rt.profiles.select("plane")
         gps()

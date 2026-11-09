@@ -90,7 +90,7 @@ Tested only in software, or with stand-ins:
 
 `hello` now carries `protocol: 2` and `caps`, which say what to show for this device. A client that doesn't see `protocol` is talking to an older app.
 
-The phone also sends `ops` twice a second: `readiness`, `armProblem`, `flightMode`, `owner`, `killed`, `mission`, `fence`, `triggers`, `trims`, `checklist`, `connections`, `caps`, `diag`, `report` and `ground`. Viewers don't get `missionData`, `planData` or the fence's shape. For a sent plan, `mission` also has `hash`, the current `step`, `expectAt`, `elapsedS` and `lateS` (seconds behind the plan at the last point reached; negative is early). Each entry in `readiness` and `connections` is `{id, label, status, detail, fix}`.
+The phone also sends `ops` twice a second: `readiness`, `armProblem`, `flightMode`, `owner`, `killed`, `mission`, `fence`, `triggers`, `trims`, `checklist`, `connections`, `caps`, `diag`, `report` and `ground`. Viewers don't get `missionData`, `planData` or the fence's shape. While armed `ops` has `timeLeftS` (flight time left, keeping the reserve), and while diverting `divert` (`zone`, `kind`, `glide`, `why`, `lat`, `lon`); `motorOut` says why the motor seems stopped. A fence's `outerM` is how far beyond it counts as a fly-away. For a sent plan, `mission` also has `hash`, the current `step`, `expectAt`, `elapsedS` and `lateS` (seconds behind the plan at the last point reached; negative is early). Each entry in `readiness` and `connections` is `{id, label, status, detail, fix}`.
 
 New `cmd` values, each answered by the usual `ack`. An `ack` for a command that asks something carries the answer in `data`:
 

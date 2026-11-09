@@ -157,7 +157,7 @@ Stalling is never a fallback: in flight a plane keeps its speed before its altit
 |---|---|---|
 | 1 | Format, compiler, timeline, enforced checks, `plan_check`, settings. Failsafe fix: a flying plane is never cut by an automatic failsafe. Exact leg check for today's missions | **Built**, 12 tests, checked on the phone |
 | 2 | Running a compiled plan (below) | **Built**, 9 tests. Untested in the air |
-| 3 | Fence layers in flight: a turn-back line before the fence for planes, the outer limit, and a staged contingency chooser (link lost, battery can't make home, motor out heard by the microphone, GPS lost) that goes to the best reachable zone. Terminate is in the format but stays off | |
+| 3 | Safety in flight (below): a plane turns back before the fence, an outer limit, and a contingency chooser that goes to the best zone it can reach. Terminate stays off | **Built**, 6 tests. Untested in the air |
 | 4 | Ground station: Plan edits the file, checks it live, and shows the path as flown, action markers, zones and gaps, an altitude profile and the timeline. Inserting, reordering and multi-editing points; dragging fence corners. Saved plans on the phone, in backups | |
 | 5 | Operate shows expected against actual times and ETAs; Review shows the plan against what happened. A plane simulator, so all of this runs end to end without hardware | |
 
@@ -183,6 +183,27 @@ Stalling is never a fallback: in flight a plane keeps its speed before its altit
 - **Landing.** After the touchdown point: motor off, wings level, nose slightly up; disarmed once it's been down and
   still for 5 s.
 - **Planes** run only sent plans, and only with `NAV_PLANE_MISS` set to 1. Old-style missions never fly a plane.
+
+#### Safety in flight (stage 3)
+
+All of this is decided on the phone and works with no link.
+
+- **Where to go.** Home if it can make it; otherwise the nearest landing zone it can reach; otherwise the nearest
+  ditch zone. Zones come from the loaded plan; home is always one. The vehicle flies there in Return Home (shown as
+  `ops.divert`), circles over it (a plane) or stops, and a person taking over ends it.
+- **Turning back before the fence (planes).** Where the plane will be two turning radii ahead along its course is
+  checked as well as where it is, so the fence's action starts while there's still room to turn.
+- **Outer limit.** A fence can have `outerM`. Further than that beyond the fence counts as a fly-away: it logs it and
+  goes to the best zone it can reach. Termination stays off.
+- **Flight time.** Time left is `PLAN_ENDURANCE` less the reserve and the time armed, shown as `ops.timeLeftS`. It's
+  by time because the phone can't see the flight battery. When home is further than the time left (with 10% to spare),
+  a vehicle on a mission or out of contact goes to the best zone it can reach; a pilot is told instead.
+- **Link lost** with the rule `home`: home if it can make it on the time left, else the best zone.
+- **Motor stopped (planes, `MIC_PROP` 1 or more).** Flying, throttle at 30% or more, and the propeller not heard for
+  a second, or turning at under 40% of what the ground run gave at that throttle, for 1.5 s. It needs to have heard
+  the propeller this flight, so a microphone that can't hear it is never mistaken for a stopped motor. The plane then
+  glides (`NAV_GLIDE_PITCH`, motor off) to the best zone within gliding distance, or the nearest if none is.
+- **GPS lost**: no zone can be found without a position. A plane circles under power, anything else stops, as before.
 
 Done when a plane plan with a survey, a too-steep climb and a turn near the fence is caught when planning with clear
 fixes; flown in the simulator, it handles a forced altitude miss and a link loss by its rules and goes to the right zone;

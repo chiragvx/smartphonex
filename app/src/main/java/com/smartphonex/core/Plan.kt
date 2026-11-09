@@ -129,6 +129,25 @@ data class PlanIssue(val step: String?, val text: String, val lat: Double? = nul
     fun json() = buildJsonObject { put("step", step); put("text", text); lat?.let { put("lat", r7(it)) }; lon?.let { put("lon", r7(it)) } }
 }
 
+/** A safe place a plan names: a `landing` zone (land intact) or a `ditch` zone (damage, but nobody hurt). Home counts as landing. */
+data class SafeZone(val id: String, val kind: String, val lat: Double, val lon: Double, val radiusM: Double)
+
+/**
+ * Where to go when something goes wrong, decided on the phone with no link. Home or a landing zone beats a ditch zone;
+ * among those, the nearest it can reach.
+ */
+object Contingency {
+    fun distanceM(lat: Double, lon: Double, z: SafeZone) = max(0.0, Navigation.distanceM(lat, lon, z.lat, z.lon) - z.radiusM)
+    fun choose(lat: Double, lon: Double, zones: List<SafeZone>, reachM: Double): SafeZone? {
+        val reachable = zones.filter { distanceM(lat, lon, it) <= reachM }
+        return reachable.filter { it.kind != "ditch" }.minByOrNull { distanceM(lat, lon, it) } ?: reachable.minByOrNull { distanceM(lat, lon, it) }
+    }
+    /** How far it can go under power in [secondsLeft], into the planned wind. */
+    fun poweredReachM(secondsLeft: Double, speed: Double, wind: Double) = max(0.0, secondsLeft) * max(0.1, speed - wind)
+    /** How far it can glide from [heightM], into the planned wind. */
+    fun glideReachM(heightM: Double, glide: Double, speed: Double, wind: Double) = max(0.0, heightM) * glide * max(0.0, speed - wind) / max(0.1, speed)
+}
+
 /** Where and with what the plan is checked. [triggers] maps each trigger id to whether it's dangerous. */
 class PlanContext(val perf: PlanPerf, val home: GpsFix?, val fence: Fence, val triggers: Map<String, Boolean>)
 
@@ -898,7 +917,7 @@ object PlanCompiler {
                     n.speed, n.step, n.every, n.orbit?.let { o -> OrbitSpec(r7(fr.lat(o.c)), r7(fr.lon(o.c)), o.r, o.laps, o.cw) }, n.miss,
                     expectS = r1(sim.arriveAt[i] - if (i == 0) 0.0 else sim.leaveAt[i - 1]), expectAt = r1(sim.arriveAt[i]), line = true, kind = n.kind,
                 )
-            }, if (landed) "land" else onEnd, onLinkLoss, hash)
+            }, if (landed) "land" else onEnd, onLinkLoss, hash, zones.map { z -> SafeZone(z.id, z.kind, r7(fr.lat(z.p)), r7(fr.lon(z.p)), z.r) })
             return PlanResult(ok, problems, warnings, if (ok) hash else null, json, mission)
         }
     }

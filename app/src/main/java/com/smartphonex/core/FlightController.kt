@@ -604,6 +604,7 @@ class FlightController(
     private fun enterMode(m: FlightMode, why: String) {
         if (m != mode) log.event("flightmode", "phone", m.name, "${mode.name} -> ${m.name}: $why")
         if (m != FlightMode.AUTO) landing = false
+        if (m != FlightMode.RETURN_HOME) divert = null
         mode = m
         rollPid.reset(); pitchPid.reset(); yawPid.reset()
         targetHeading = null
@@ -632,6 +633,8 @@ class FlightController(
         lastArmed = armed
         monitor(now, armed)
         updateFlying(now)
+        watchMotor(now)
+        if (!armed) { motorOutWhy = null; divert = null }
         val out = when (mode) {
             FlightMode.MANUAL -> { clearTargets(); input }
             FlightMode.STABILIZE -> if (isPlane()) planeStabilize(input, dt) else groundRate(input, input.throttle, -input.steering * p("RATE_MAX"), dt)
@@ -846,20 +849,76 @@ class FlightController(
     private var missionStopRequest = false
     fun takeMissionStop(): Boolean = synchronized(lock) { missionStopRequest.also { missionStopRequest = false } }
 
+    /** Going somewhere safer than home, chosen by the contingency rules. Gliding means the motor has stopped. */
+    class Divert(val id: String, val kind: String, val lat: Double, val lon: Double, val radiusM: Double, val glide: Boolean, val why: String)
+    @Volatile var divert: Divert? = null; private set
+
+    /** Flies to a zone instead of home, in RETURN_HOME. Cleared by any other mode, so a pilot taking over ends it. */
+    fun divertTo(d: Divert) = synchronized(lock) {
+        divert = d
+        log.event("failsafe", "phone", "divert", "${d.why}: ${if (d.glide) "gliding" else "going"} to ${if (d.id == "home") "home" else "${d.kind} zone ${d.id}"}")
+        enterMode(FlightMode.RETURN_HOME, d.why)
+    }
+
     private fun returnHome(input: ActuatorOutput, dt: Double): ActuatorOutput {
         val g = navFix()
-        val h = home
-        // No trustworthy position: stop (a plane circles) rather than drive on a guess.
-        if (g == null || h == null) return holdHere(input, dt)
-        val dist = Navigation.distanceM(g.lat, g.lon, h.lat, h.lon)
-        if (dist < p("RTH_RADIUS")) {
-            if (!arrivedHome) { arrivedHome = true; log.event("fc", "phone", "home", "arrived home") }
-            if (isPlane()) return planeControl(input, p("RTH_ORBIT"), 0.0, p("RTH_THROTTLE"), dt)
+        val d = divert
+        val glide = d?.glide == true && isPlane()
+        val tLat = d?.lat ?: home?.lat
+        val tLon = d?.lon ?: home?.lon
+        // No trustworthy position: stop (a plane circles) rather than drive on a guess. Gliding, it goes wings level.
+        if (g == null || tLat == null || tLon == null) return if (glide) planeControl(input, 0.0, p("NAV_GLIDE_PITCH"), 0.0, dt) else holdHere(input, dt)
+        val dist = Navigation.distanceM(g.lat, g.lon, tLat, tLon)
+        if (dist < maxOf(p("RTH_RADIUS"), d?.radiusM ?: 0.0)) {
+            if (!arrivedHome) { arrivedHome = true; log.event("fc", "phone", "home", if (d == null || d.id == "home") "arrived home" else "arrived at ${d.kind} zone ${d.id}") }
+            // Over the zone a gliding plane circles down inside it; under power it circles and waits.
+            if (isPlane()) return planeControl(input, p("RTH_ORBIT"), if (glide) p("NAV_GLIDE_PITCH") else 0.0, if (glide) 0.0 else p("RTH_THROTTLE"), dt)
             return groundRate(input, 0.0, 0.0, dt).also { targetHeading = null }
         }
         arrivedHome = false
-        return steerToHeading(input, Navigation.bearingDeg(g.lat, g.lon, h.lat, h.lon), p("RTH_THROTTLE"), dt)
+        val heading = Navigation.bearingDeg(g.lat, g.lon, tLat, tLon)
+        return if (glide) steerToHeading(input, heading, 0.0, dt, p("NAV_GLIDE_PITCH")) else steerToHeading(input, heading, p("RTH_THROTTLE"), dt)
     }
+
+    // --- The motor stopping in flight, heard by the microphone.
+
+    private var motorOutSinceMs = 0L
+    /** Why the motor seems to have stopped in flight, once it's lasted [MOTOR_OUT_MS]. Stays until it's heard again under throttle. */
+    @Volatile var motorOutWhy: String? = null; private set
+
+    private fun motorOutSign(now: Long): String? {
+        if (!isPlane() || !lastArmed || p("MIC_PROP") < 1 || flyingWhy == null) return null
+        val u = lastOutput.throttle
+        if (u < 0.3) return null
+        // Never heard this flight: no way to tell a stopped motor from a microphone that can't hear it.
+        if (propAtMs == 0L || propAtMs < armedAtMs) return null
+        val pct = "${(u * 100).toInt()}%"
+        if (now - propAtMs >= 1000) return "the propeller can't be heard at $pct throttle"
+        val raw = propTracker.hz ?: return null
+        val exp = groundRuns()?.reference?.expectedRevHz(u, packStrength(now)) ?: return null
+        val rev = raw / p("PROP_BLADES")
+        return if (rev < exp * 0.4) "the motor turns at ${(rev / exp * 100).toInt()}% of what $pct throttle gave on the ground" else null
+    }
+
+    private fun watchMotor(now: Long) {
+        val why = motorOutSign(now)
+        if (why == null) {
+            motorOutSinceMs = 0L
+            if (motorOutWhy != null && lastOutput.throttle >= 0.3 && now - propAtMs < 1000) {
+                motorOutWhy = null
+                log.event("failsafe", "phone", "motor_ok", "the motor is heard again")
+            }
+            return
+        }
+        if (motorOutSinceMs == 0L) motorOutSinceMs = now
+        if (motorOutWhy == null && now - motorOutSinceMs >= MOTOR_OUT_MS) {
+            motorOutWhy = why
+            log.event("failsafe", "phone", "motor_out", "The motor seems to have stopped: $why")
+        }
+    }
+
+    /** Seconds since arming, for flight time left. 0 while disarmed. */
+    fun armedSeconds(): Double = synchronized(lock) { if (lastArmed && armedAtMs > 0) (nowMs() - armedAtMs) / 1000.0 else 0.0 }
 
     // --- Health and failsafes.
 
@@ -1112,6 +1171,7 @@ class FlightController(
         const val LOG_HEADER = "t,mode,roll,pitch,yaw,rollRate,pitchRate,yawRate,targetRoll,targetPitch,targetHeading,throttle,steering,pitchOut,rollOut,lat,lon,alt,gpsAcc"
         private const val SENSOR_STALE_MS = 500L
         private const val GYRO_STOPPED = "gyroscope stopped"
+        private const val MOTOR_OUT_MS = 1_500L
         private const val GPS_STALE_MS = 5000L
         private const val GPS_LOST_MS = 10000L
         private const val STALL_MS = 50.0

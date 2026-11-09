@@ -210,6 +210,19 @@ class PlanTest {
         assertTrue(e.toString(), e.any { "The leg to point 2 goes inside keep-out area 1" in it })
     }
 
+    @Test fun theContingencyChooserPrefersLandingThenTheNearestItCanReach() {
+        fun z(id: String, kind: String, north: Double, r: Double = 0.0) = SafeZone(id, kind, fr.lat(V2(0.0, north)), lon0, r)
+        val zones = listOf(z("home", "landing", 0.0), z("field", "landing", 900.0, 50.0), z("scrub", "ditch", 650.0))
+        val here = fr.lat(V2(0.0, 600.0))
+        assertEquals("the ditch is nearer, but a landing zone in reach wins", "field", Contingency.choose(here, lon0, zones, 300.0)?.id)
+        assertEquals("only the ditch in reach", "scrub", Contingency.choose(here, lon0, zones, 100.0)?.id)
+        assertNull(Contingency.choose(here, lon0, zones, 20.0))
+        assertEquals(300.0 * 10, Contingency.poweredReachM(300.0, 15.0, 5.0), 1e-9)
+        assertEquals("50 m at 8:1 into a third of the speed in wind", 50 * 8 * 10.0 / 15, Contingency.glideReachM(50.0, 8.0, 15.0, 5.0), 1e-9)
+        val compiled = compile(plan(step("goto") { put("at", at(0.0, 300.0)) }) { putJsonArray("zones") { addJsonObject { put("id", "field"); put("kind", "landing"); put("at", at(0.0, 900.0)) } } })
+        assertEquals(listOf("home", "field"), compiled.mission!!.zones.map { it.id })
+    }
+
     @Test fun withoutAHomeThePlansOwnHomeIsUsedAndSaidSo() {
         val r = compile(plan(step("goto") { put("at", at(0.0, 300.0)) }) { put("home", at(0.0, 0.0)) }, withHome = false)
         assertTrue(r.problems.toString(), r.ok)

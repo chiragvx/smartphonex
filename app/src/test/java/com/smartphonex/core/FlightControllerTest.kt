@@ -344,6 +344,30 @@ class FlightControllerTest {
         assertTrue(log.allEvents().any { it.code == "speed_protect" })
     }
 
+    @Test fun aMotorThatFallsSilentInFlightIsNoticedAfterASecondAndAHalf() {
+        type = "plane"
+        params.set("MIC_PROP", 1.0)
+        fun fly(seconds: Double, throttle: Double, heard: Boolean) = repeat((seconds * 10).toInt()) { i ->
+            nowMs += 100; nowNs += 100_000_000L
+            if (i % 10 == 0) fc.onGps(GpsFix(28.0, 77.0, 300.0, 15.0, 0.0, 4.0, 10, nowMs), 0.0)
+            fc.process(ActuatorOutput(throttle, 0.0), true, 0.1)
+            if (heard) fc.onPropTone(PropTone.Tone(300.0, 30.0, -20.0, 150.0, listOf(2, 4)), outputsAtRest = false)
+        }
+        fly(3.0, 0.6, heard = false)
+        assertNull("never heard this flight: it can't tell", fc.motorOutWhy)
+        fly(3.0, 0.6, heard = true)
+        assertNull(fc.motorOutWhy)
+        fly(2.0, 0.6, heard = false)
+        assertNull("1 s for the tone to go stale, then 1.5 s to be sure", fc.motorOutWhy)
+        fly(1.0, 0.6, heard = false)
+        assertTrue(fc.motorOutWhy!!, "can't be heard" in fc.motorOutWhy!!)
+        assertTrue(log.allEvents().any { it.code == "motor_out" })
+        fly(1.0, 0.6, heard = true)
+        assertNull("heard again under throttle", fc.motorOutWhy)
+        fly(4.0, 0.1, heard = false)
+        assertNull("gliding with the throttle closed is not a stopped motor", fc.motorOutWhy)
+    }
+
     @Test fun lostGpsLeavesReturnHome() {
         type = "plane"
         feed(0.0, 0.0, 0.0, 3.0)

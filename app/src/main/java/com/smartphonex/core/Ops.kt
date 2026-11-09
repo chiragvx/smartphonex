@@ -155,8 +155,13 @@ data class MissionItem(
     val miss: Misses? = null, val expectS: Double? = null, val expectAt: Double? = null, val line: Boolean = false, val kind: String = "point",
 )
 /** [hash] is set for a compiled plan: what a person checked and sent. */
-data class Mission(val name: String, val items: List<MissionItem>, val onEnd: String = "hold", val onLinkLoss: String = "continue", val hash: String? = null)
-data class Fence(val polygon: List<Pair<Double, Double>> = emptyList(), val keepOut: List<List<Pair<Double, Double>>> = emptyList(), val maxDistM: Double = 0.0, val maxAltM: Double = 0.0, val action: String = "hold") {
+data class Mission(
+    val name: String, val items: List<MissionItem>, val onEnd: String = "hold", val onLinkLoss: String = "continue", val hash: String? = null,
+    /** Where it may go if something goes wrong, home included. */
+    val zones: List<SafeZone> = emptyList(),
+)
+/** [outerM]: how far beyond the fence counts as a fly-away, where it goes to the best zone it can reach. 0 is none. */
+data class Fence(val polygon: List<Pair<Double, Double>> = emptyList(), val keepOut: List<List<Pair<Double, Double>>> = emptyList(), val maxDistM: Double = 0.0, val maxAltM: Double = 0.0, val action: String = "hold", val outerM: Double = 0.0) {
     val isSet: Boolean get() = polygon.size >= 3 || keepOut.isNotEmpty() || maxDistM > 0 || maxAltM > 0
 }
 
@@ -205,10 +210,10 @@ object Geo {
     }
 
     private fun points(a: JsonArray?) = a?.mapNotNull { p -> (p as? JsonArray)?.takeIf { it.size >= 2 }?.let { it[0].jsonPrimitive.double to it[1].jsonPrimitive.double } } ?: emptyList()
-    fun parseFence(o: JsonObject) = Fence(points(o["polygon"] as? JsonArray), (o["keepOut"] as? JsonArray)?.map { points(it as? JsonArray) } ?: emptyList(), o.d("maxDistM") ?: 0.0, o.d("maxAltM") ?: 0.0, o.s("action") ?: "hold")
+    fun parseFence(o: JsonObject) = Fence(points(o["polygon"] as? JsonArray), (o["keepOut"] as? JsonArray)?.map { points(it as? JsonArray) } ?: emptyList(), o.d("maxDistM") ?: 0.0, o.d("maxAltM") ?: 0.0, o.s("action") ?: "hold", o.d("outerM") ?: 0.0)
     fun fenceJson(f: Fence) = buildJsonObject {
         fun arr(p: List<Pair<Double, Double>>) = JsonArray(p.map { (a, b) -> buildJsonArray { add(a); add(b) } })
-        put("polygon", arr(f.polygon)); put("keepOut", JsonArray(f.keepOut.map(::arr))); put("maxDistM", f.maxDistM); put("maxAltM", f.maxAltM); put("action", f.action)
+        put("polygon", arr(f.polygon)); put("keepOut", JsonArray(f.keepOut.map(::arr))); put("maxDistM", f.maxDistM); put("maxAltM", f.maxAltM); put("action", f.action); put("outerM", f.outerM)
     }
 
     fun parseMission(o: JsonObject): Pair<Mission?, List<String>> {
@@ -1029,8 +1034,10 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         val est = rt.fc.navEstimate()
         // Checked even when fixes stop arriving: a fence that can't be checked counts as broken.
         if (armed && f.isSet) {
+            val margin = est?.let { it.radiusM + rt.params.get("FENCE_MARGIN") } ?: 0.0
             val b = if (est == null || est.health == GpsGuard.Health.LOST) "position lost, so the fence can't be checked"
-                else Geo.breach(f, est.lat, est.lon, g?.altM, rt.fc.homeNow, est.radiusM + rt.params.get("FENCE_MARGIN"))
+                else Geo.breach(f, est.lat, est.lon, g?.altM, rt.fc.homeNow, margin) ?: turnBack(f, est, margin)
+            if (est != null && est.health != GpsGuard.Health.LOST) outerLimit(f, est.lat, est.lon)
             if (b != null && breachReason == null) {
                 rt.log.event("failsafe", "phone", "fence", "Fence: $b. Action: ${f.action}")
                 when (f.action) {
@@ -1048,11 +1055,112 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
             rt.log.event("failsafe", "phone", "link_lost", "Ground link lost during the mission. Rule: $rule")
             when (rule) {
                 "hold" -> { missions.pause(); rt.fc.force(FlightMode.HOLD, "link lost") }
-                "home" -> { missions.abort(); rt.fc.force(FlightMode.RETURN_HOME, "link lost") }
+                // Home if it can make it on the time left, else the best zone it can reach.
+                "home" -> if (est == null || divert("link lost", est.lat, est.lon, Contingency.poweredReachM(secondsLeft(), perfNow().speed, perfNow().wind), glide = false) == null) {
+                    missions.abort(); rt.fc.force(FlightMode.RETURN_HOME, "link lost")
+                }
             }
         }
+        if (armed) contingencies(now, est) else { timeWarned = false; timeActed = false; motorActed = false; outerActed = false }
     }
     private var lastTickSlow = 0L
+
+    // --- Contingencies, decided here on the phone: they must work with no link.
+
+    private var timeWarned = false
+    private var timeActed = false
+    private var motorActed = false
+    private var outerActed = false
+
+    private fun perfNow() = PlanPerf.from(rt.params, rt.profiles.active.vehicleType)
+
+    /** Flight time left, keeping the reserve. By time armed: the phone can't see the flight battery. */
+    fun secondsLeft(): Double { val pf = perfNow(); return pf.enduranceS * (1 - pf.reservePct / 100) - rt.fc.armedSeconds() }
+
+    /** Home as it is now, and the loaded plan's zones. */
+    private fun zonesNow(): List<SafeZone> {
+        val h = rt.fc.homeNow
+        val plan = missions.mission?.zones?.filter { it.id != "home" } ?: emptyList()
+        return (if (h != null) listOf(SafeZone("home", "landing", h.lat, h.lon, 0.0)) else emptyList()) + plan
+    }
+
+    /**
+     * Sends the vehicle to the best place it can reach: home when it can make it, else a landing zone, else a ditch
+     * zone. Gliding with nowhere in reach, it heads for the nearest anyway. Null when there's nowhere to go.
+     */
+    private fun divert(why: String, lat: Double, lon: Double, reachM: Double, glide: Boolean): SafeZone? {
+        val zones = zonesNow()
+        val home = zones.firstOrNull { it.id == "home" }?.takeIf { Contingency.distanceM(lat, lon, it) <= reachM }
+        var z = home ?: Contingency.choose(lat, lon, zones, reachM)
+        if (z == null && glide) {
+            z = zones.minByOrNull { Contingency.distanceM(lat, lon, it) }
+            if (z != null) rt.log.event("failsafe", "phone", "no_zone", "$why: nowhere within gliding distance. Heading for the nearest, ${z.id}")
+        }
+        if (z == null) { rt.log.event("failsafe", "phone", "no_zone", "$why: no home or safe zone within reach"); return null }
+        missions.abort()
+        rt.fc.divertTo(FlightController.Divert(z.id, z.kind, z.lat, z.lon, z.radiusM, glide, why))
+        return z
+    }
+
+    /** A plane heading out acts before the fence: where it will be a turning circle from now is checked too. */
+    private fun turnBack(f: Fence, est: GpsGuard.Estimate, margin: Double): String? {
+        if (rt.profiles.active.vehicleType != "plane" || est.health != GpsGuard.Health.GOOD) return null
+        val fix = rt.fc.gpsNow ?: return null
+        // The higher of the smoothed speed and the fix's own (Doppler) speed: underestimating it is the worse mistake.
+        val v = maxOf(est.speedMps, fix.speedMps)
+        if (v < 3) return null
+        val course = fix.courseDeg
+        val ahead = 2 * v * v / (9.80665 * kotlin.math.tan(Math.toRadians(rt.params.get("PLAN_BANK"))))
+        val c = Math.toRadians(course)
+        val lat = est.lat + ahead * kotlin.math.cos(c) / 111_320.0
+        val lon = est.lon + ahead * kotlin.math.sin(c) / (111_320.0 * kotlin.math.cos(Math.toRadians(est.lat)))
+        return Geo.breach(f, lat, lon, null, rt.fc.homeNow, margin)?.let { "heading out: ${ahead.toInt()} m ahead it would be $it. Turning back before the fence" }
+    }
+
+    /** Past the fence by more than its outer limit: a fly-away. Termination is off, so it goes to the best zone it can reach. */
+    private fun outerLimit(f: Fence, lat: Double, lon: Double) {
+        if (f.outerM <= 0 || outerActed) return
+        val h = rt.fc.homeNow
+        val outside = maxOf(
+            if (f.polygon.size >= 3 && !Geo.inside(lat, lon, f.polygon)) Geo.edgeDistanceM(lat, lon, f.polygon) else 0.0,
+            if (f.maxDistM > 0 && h != null) Navigation.distanceM(h.lat, h.lon, lat, lon) - f.maxDistM else 0.0,
+        )
+        if (outside <= f.outerM) return
+        outerActed = true
+        val pf = perfNow()
+        rt.log.event("failsafe", "phone", "outer", "${outside.toInt()} m beyond the fence, past its ${f.outerM.toInt()} m outer limit: something is badly wrong. Termination is off: going to the best zone it can reach")
+        divert("past the fence's outer limit", lat, lon, Contingency.poweredReachM(secondsLeft(), pf.speed, pf.wind), glide = false)
+            ?: rt.fc.force(FlightMode.RETURN_HOME, "past the outer limit")
+    }
+
+    private fun contingencies(now: Long, est: GpsGuard.Estimate?) {
+        val pos = est?.takeIf { it.health != GpsGuard.Health.LOST }
+        val pf = perfNow()
+        val h = rt.fc.homeNow
+        // Flight time: acted on while the vehicle is on its own (a mission, or the link lost); otherwise the pilot is told.
+        if (pos != null && h != null && !timeActed) {
+            val left = secondsLeft()
+            val need = Navigation.distanceM(pos.lat, pos.lon, h.lat, h.lon) / max(0.1, pf.speed - pf.wind) * 1.1
+            if (left < need) {
+                val alone = missions.state == MissionEngine.State.RUNNING || (linkLastMs != 0L && now - linkLastMs > LINK_LOSS_MS)
+                if (alone) {
+                    timeActed = true
+                    divert("flight time: about ${left.toInt()} s left, home needs ${need.toInt()} s", pos.lat, pos.lon, Contingency.poweredReachM(left, pf.speed, pf.wind), glide = false)
+                } else if (!timeWarned) {
+                    timeWarned = true
+                    rt.log.event("failsafe", "phone", "time_low", "Flight time: about ${max(0.0, left).toInt()} s left, and home is ${need.toInt()} s away. Head back now")
+                }
+            }
+        }
+        // The motor stopped in flight: glide to the best zone in gliding distance.
+        val out = rt.fc.motorOutWhy
+        if (out == null) motorActed = false
+        else if (!motorActed && pos != null) {
+            motorActed = true
+            val reach = Contingency.glideReachM(rt.fc.heightAboveHome() ?: 0.0, pf.glide, pf.speed, pf.wind)
+            divert("motor stopped: $out", pos.lat, pos.lon, reach, glide = true)
+        }
+    }
 
     // --- Diagnostics: real checks that produce a saved, dated report.
 
@@ -1231,6 +1339,9 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         tester.status()?.let { put("test", it) }
         put("groundRun", groundRun.json())
         put("mission", missions.json())
+        rt.fc.divert?.let { d -> putJsonObject("divert") { put("zone", d.id); put("kind", d.kind); put("glide", d.glide); put("why", d.why); put("lat", d.lat); put("lon", d.lon) } }
+        rt.fc.motorOutWhy?.let { put("motorOut", it) }
+        if (rt.fc.armedSeconds() > 0) put("timeLeftS", secondsLeft().toInt())
         if (canSeePrivate) missions.mission?.let { put("missionData", Geo.missionJson(it)) }
         if (canSeePrivate) loadedPlan?.let { put("planData", it) }
         put("fence", buildJsonObject { put("set", fence.isSet); put("breach", breachReason); if (canSeePrivate) put("data", Geo.fenceJson(fence)) })

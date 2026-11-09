@@ -102,6 +102,7 @@ class ParamStore(private val file: File?, private val vehicle: () -> String) {
             ParamDef("NAV_THR_P", "Navigation", "Plane: extra throttle per metre below the planned height", 0.02, 0.0, 0.2),
             ParamDef("NAV_THR_MIN", "Navigation", "Plane: least throttle while following a plan", 0.2, 0.0, 1.0),
             ParamDef("NAV_THR_MAX", "Navigation", "Plane: most throttle while following a plan, and what it uses to win back speed", 0.9, 0.1, 1.0),
+            ParamDef("NAV_GLIDE_PITCH", "Navigation", "Plane with its motor stopped: pitch to glide at, degrees. Negative is nose down: keep it gliding, not stalling", -3.0, -15.0, 5.0),
             ParamDef("NAV_PLANE_MISS", "Navigation", "Experimental: 1 lets a plane fly plans. Untested in the air: fly with a pilot ready to take over", 0.0, 0.0, 1.0),
             ParamDef("AUTO_DISARM", "Failsafe", "Disarm after this many idle seconds. 0 turns it off", 120.0, 0.0, 3600.0, mapOf("plane" to 0.0)),
             ParamDef("ARM_REQ_TEST", "Failsafe", "1: arming needs a passing test report from the last hour", 0.0, 0.0, 1.0),
