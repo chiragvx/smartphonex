@@ -4,6 +4,7 @@ import kotlinx.serialization.json.*
 import java.io.File
 import java.util.concurrent.Executors
 import kotlin.math.abs
+import kotlin.math.max
 
 private fun JsonObject.s(k: String) = (this[k] as? JsonPrimitive)?.takeIf { it.isString }?.content
 private fun JsonObject.d(k: String) = (this[k] as? JsonPrimitive)?.takeIf { !it.isString }?.doubleOrNull
@@ -140,8 +141,21 @@ object TriggerCodec {
     }
 }
 
-data class MissionItem(val lat: Double, val lon: Double, val alt: Double? = null, val throttle: Double? = null, val holdS: Double = 0.0, val radiusM: Double = 5.0, val triggers: List<String> = emptyList())
-data class Mission(val name: String, val items: List<MissionItem>, val onEnd: String = "hold", val onLinkLoss: String = "continue")
+data class OrbitSpec(val lat: Double, val lon: Double, val radiusM: Double, val laps: Double, val cw: Boolean)
+
+/**
+ * One point to go to. A compiled plan adds the rest: its [step], [speed], triggers every so many metres along the leg
+ * that arrives here, an orbit, miss rules, [line] (follow the straight line from the last point, as the plan was
+ * checked) and the expected times: [expectS] for the leg, [expectAt] from the start.
+ */
+data class MissionItem(
+    val lat: Double, val lon: Double, val alt: Double? = null, val throttle: Double? = null, val holdS: Double = 0.0, val radiusM: Double = 5.0,
+    val triggers: List<String> = emptyList(),
+    val speed: Double? = null, val step: String? = null, val every: List<Pair<String, Double>> = emptyList(), val orbit: OrbitSpec? = null,
+    val miss: Misses? = null, val expectS: Double? = null, val expectAt: Double? = null, val line: Boolean = false, val kind: String = "point",
+)
+/** [hash] is set for a compiled plan: what a person checked and sent. */
+data class Mission(val name: String, val items: List<MissionItem>, val onEnd: String = "hold", val onLinkLoss: String = "continue", val hash: String? = null)
 data class Fence(val polygon: List<Pair<Double, Double>> = emptyList(), val keepOut: List<List<Pair<Double, Double>>> = emptyList(), val maxDistM: Double = 0.0, val maxAltM: Double = 0.0, val action: String = "hold") {
     val isSet: Boolean get() = polygon.size >= 3 || keepOut.isNotEmpty() || maxDistM > 0 || maxAltM > 0
 }
@@ -215,10 +229,14 @@ object Geo {
 
     fun missionJson(m: Mission) = buildJsonObject {
         put("name", m.name); put("onEnd", m.onEnd); put("onLinkLoss", m.onLinkLoss)
+        m.hash?.let { put("hash", it) }
         putJsonArray("items") {
             m.items.forEach { i -> addJsonObject {
                 put("lat", i.lat); put("lon", i.lon); put("alt", i.alt); put("throttle", i.throttle); put("holdS", i.holdS); put("radiusM", i.radiusM)
                 putJsonArray("triggers") { i.triggers.forEach { add(it) } }
+                // Shown, not read back: a compiled plan is kept as its file and compiled again.
+                i.step?.let { put("step", it) }
+                i.expectAt?.let { put("expectAt", it) }
             } }
         }
     }
@@ -253,13 +271,27 @@ object Geo {
     }
 }
 
-/** Follows a mission on the phone, so it carries on if the ground station goes away. */
+/**
+ * Follows a mission on the phone, so it carries on if the ground station goes away. For a compiled plan it follows the
+ * line between points (the path that was checked), fires distance triggers along legs, flies orbits, and applies each
+ * step's miss rules: a leg taking far longer than expected, or arriving off its altitude.
+ */
 class MissionEngine(private val clock: () -> Long) {
     enum class State { IDLE, RUNNING, PAUSED, DONE, ABORTED }
     sealed class Step {
-        class GoTo(val lat: Double, val lon: Double, val throttle: Double?) : Step()
+        /** Head for the point. With [fromLat] and [fromLon], follow the straight line from there. */
+        class GoTo(
+            val lat: Double, val lon: Double, val throttle: Double?,
+            val fromLat: Double? = null, val fromLon: Double? = null, val alt: Double? = null, val speed: Double? = null,
+        ) : Step()
+        /** Go round a centre: an orbit. */
+        class Circle(val lat: Double, val lon: Double, val radiusM: Double, val cw: Boolean, val alt: Double?, val throttle: Double?) : Step()
+        /** Stay at a point: a plane circles round it, anything else stops. For holds and for circling to make altitude. */
+        class Wait(val lat: Double, val lon: Double, val radiusM: Double, val alt: Double?) : Step()
         data object Hold : Step()
         class End(val action: String) : Step()
+        /** A miss rule said give up: go home. */
+        class Abort(val why: String) : Step()
     }
 
     @Volatile var mission: Mission? = null; private set
@@ -270,37 +302,154 @@ class MissionEngine(private val clock: () -> Long) {
     @Volatile var lastDist: Double? = null; private set
     @Volatile var lastBearing: Double? = null; private set
     var onArrive: (MissionItem, Int) -> Unit = { _, _ -> }
+    /** A distance trigger along a leg: the trigger, and the point the leg arrives at. */
+    var onEvery: (String, MissionItem, Int) -> Unit = { _, _, _ -> }
+    /** A miss rule applied, said in words for the log. */
+    var onMiss: (String) -> Unit = {}
 
-    @Synchronized fun load(m: Mission) { mission = m; state = State.IDLE; index = 0; arrived = false }
-    @Synchronized fun start() { state = State.RUNNING; index = 0; arrived = false; holdUntil = 0 }
+    private var startMs = 0L
+    private var legStartMs = 0L
+    private var legFrom: Pair<Double, Double>? = null
+    private val everyNext = HashMap<String, Int>()
+    private var orbitSwept = 0.0
+    private var orbitLast: Double? = null
+    private var waitKind: String? = null
+    private var waitUntil = 0L
+    private var waitThen: String? = null
+    private val missLogged = HashSet<String>()
+    @Volatile var lateS: Double? = null; private set
+
+    private fun resetLeg(now: Long) {
+        legStartMs = now; everyNext.clear(); orbitSwept = 0.0; orbitLast = null; waitKind = null; arrived = false; holdUntil = 0
+    }
+    @Synchronized fun load(m: Mission) { mission = m; state = State.IDLE; index = 0; arrived = false; lateS = null }
+    @Synchronized fun start() {
+        state = State.RUNNING; index = 0; startMs = clock(); legFrom = null; missLogged.clear(); lateS = null; resetLeg(startMs)
+    }
     @Synchronized fun pause() { if (state == State.RUNNING) state = State.PAUSED }
-    @Synchronized fun resume() { if (state == State.PAUSED) state = State.RUNNING }
+    // Time paused doesn't count against the leg.
+    @Synchronized fun resume() { if (state == State.PAUSED) { state = State.RUNNING; legStartMs = clock(); waitKind = null } }
     @Synchronized fun abort() { if (state == State.RUNNING || state == State.PAUSED) state = State.ABORTED }
-    @Synchronized fun skip() { if (state == State.RUNNING) { index++; arrived = false; holdUntil = 0 } }
+    @Synchronized fun skip() { if (state == State.RUNNING) advance(null) }
     @Synchronized fun guided(lat: Double, lon: Double) { load(Mission("Go here", listOf(MissionItem(lat, lon)))); start() }
 
     /** The point being headed for, while running. */
     @Synchronized fun currentItem(): MissionItem? = if (state == State.RUNNING) mission?.items?.getOrNull(index) else null
 
-    @Synchronized fun step(g: GpsFix?): Step {
+    private fun advance(g: GpsFix?) {
+        val p = mission?.items?.getOrNull(index)
+        legFrom = p?.let { it.lat to it.lon } ?: g?.let { it.lat to it.lon }
+        index++
+        resetLeg(clock())
+    }
+
+    /** Applies a miss rule. Null means carry on with the step; otherwise what to do instead. */
+    private fun miss(kind: String, rule: Miss?, why: String, p: MissionItem, g: GpsFix): Step? {
+        val r = rule ?: Miss("continue")
+        val where = p.step?.let { "step $it" } ?: "point ${index + 1}"
+        when (r.act) {
+            "continue" -> { if (missLogged.add("$kind/$index")) onMiss("$where: $why. Carrying on") }
+            "skip" -> { onMiss("$where: $why. Skipped"); advance(g); return step(g, null) }
+            "abort" -> { onMiss("$where: $why. Aborting: going home"); state = State.ABORTED; return Step.Abort("$where: $why") }
+            else -> if (waitKind != kind) {
+                waitKind = kind; waitUntil = clock() + (r.maxS * 1000).toLong(); waitThen = r.then
+                onMiss("$where: $why. ${if (r.act == "circle") "Circling" else "Holding"} up to ${r.maxS.toInt()} s")
+            }
+        }
+        return null
+    }
+
+    /** A wait that ran out: what follows it. */
+    private fun waitOver(p: MissionItem, g: GpsFix, why: String): Step? {
+        val then = waitThen ?: "abort"
+        waitKind = null
+        return miss("after", Miss(then), "$why after waiting", p, g)
+    }
+
+    @Synchronized fun step(g: GpsFix?, heightM: Double? = null): Step {
         val m = mission ?: return Step.Hold
         if (state != State.RUNNING || g == null) return Step.Hold
         val p = m.items.getOrNull(index) ?: run { state = State.DONE; return Step.End(m.onEnd) }
+        val now = clock()
+        if (legFrom == null) legFrom = g.lat to g.lon
         val dist = Navigation.distanceM(g.lat, g.lon, p.lat, p.lon)
         lastDist = dist
         lastBearing = Navigation.bearingDeg(g.lat, g.lon, p.lat, p.lon)
+        if (!arrived) fireEvery(p, g, atEnd = false)
+
         if (!arrived && dist <= p.radiusM) {
             arrived = true
-            holdUntil = clock() + (p.holdS * 1000).toLong()
+            fireEvery(p, g, atEnd = true)
+            holdUntil = now + (p.holdS * 1000).toLong()
+            p.expectAt?.let { lateS = (now - startMs) / 1000.0 - it }
             onArrive(p, index)
         }
-        if (arrived) {
-            if (clock() < holdUntil) return Step.Hold
-            index++
-            arrived = false
-            return step(g)
+        if (!arrived) {
+            // A leg taking more than twice as long as planned, plus half a minute: the arrival miss rule.
+            val e = p.expectS
+            if (e != null && waitKind != "arrival" && now - legStartMs > (e * 2 + 30) * 1000) {
+                miss("arrival", p.miss?.arrival, "not there after ${(e * 2 + 30).toInt()} s, planned ${e.toInt()} s", p, g)?.let { return it }
+            }
+            if (waitKind == "arrival") {
+                if (now < waitUntil) return Step.Wait(g.lat, g.lon, p.radiusM, p.alt)
+                legStartMs = now
+                waitOver(p, g, "still not there")?.let { return it }
+            }
+            val from = legFrom
+            return if (p.line && from != null) Step.GoTo(p.lat, p.lon, p.throttle, from.first, from.second, p.alt, p.speed)
+            else Step.GoTo(p.lat, p.lon, p.throttle, alt = p.alt, speed = p.speed)
         }
-        return Step.GoTo(p.lat, p.lon, p.throttle)
+
+        // Arrived. Off its altitude: the altitude miss rule.
+        val alt = p.alt
+        val rule = p.miss?.altitude
+        if (alt != null && heightM != null && rule != null && waitKind != "done-altitude") {
+            val off = alt - heightM
+            if (abs(off) > rule.tolerance) {
+                val verb = if (off > 0) "below" else "above"
+                if (waitKind == "altitude") {
+                    if (now < waitUntil) return Step.Wait(p.lat, p.lon, max(p.radiusM, 30.0), alt)
+                    waitOver(p, g, "still ${abs(off).toInt()} m $verb")?.let { return it }
+                    waitKind = "done-altitude"
+                } else {
+                    miss("altitude", rule, "arrived ${abs(off).toInt()} m $verb ${alt.toInt()} m", p, g)?.let { return it }
+                    if (waitKind == "altitude") return Step.Wait(p.lat, p.lon, max(p.radiusM, 30.0), alt)
+                    waitKind = "done-altitude"
+                }
+            } else if (waitKind == "altitude") { onMiss("${p.step?.let { "step $it" } ?: "point ${index + 1}"}: reached ${alt.toInt()} m. Carrying on"); waitKind = "done-altitude" }
+        }
+
+        p.orbit?.let { o ->
+            val b = Navigation.bearingDeg(o.lat, o.lon, g.lat, g.lon)
+            orbitLast?.let { last -> orbitSwept += Frames.wrap180(b - last) * if (o.cw) 1.0 else -1.0 }
+            orbitLast = b
+            if (orbitSwept < o.laps * 360 - 1) return Step.Circle(o.lat, o.lon, o.radiusM, o.cw, alt, p.throttle)
+        }
+        if (now < holdUntil) return if (p.line) Step.Wait(p.lat, p.lon, max(p.radiusM, 30.0), alt) else Step.Hold
+        advance(g)
+        return step(g, heightM)
+    }
+
+    /**
+     * Distance triggers fire at 0, every, 2 × every… metres along the leg, as the plan counted them, while the vehicle
+     * is on the line. Any still due when it arrives fire then.
+     */
+    private fun fireEvery(p: MissionItem, g: GpsFix, atEnd: Boolean) {
+        if (p.every.isEmpty()) return
+        val from = legFrom ?: return
+        val fr = LocalFrame(from.first, from.second)
+        val b = fr.xy(p.lat, p.lon)
+        val len = b.len
+        if (len < 1e-6) return
+        val u = b.unit()
+        val v = fr.xy(g.lat, g.lon)
+        val along = if (atEnd) len else v.dot(u)
+        if (!atEnd && abs(v.cross(u)) > max(10.0, p.radiusM)) return
+        for ((t, e) in p.every) {
+            var k = everyNext[t] ?: 0
+            while (k * e <= len + 1e-6 && along >= k * e - 1e-6) { onEvery(t, p, index); k++ }
+            everyNext[t] = k
+        }
     }
 
     fun json() = buildJsonObject {
@@ -308,6 +457,10 @@ class MissionEngine(private val clock: () -> Long) {
         put("state", state.name); put("name", m?.name); put("index", index); put("total", m?.items?.size ?: 0)
         put("dist", lastDist?.let { Math.round(it * 10) / 10.0 }); put("bearing", lastBearing?.let { Math.round(it).toDouble() })
         put("onLinkLoss", m?.onLinkLoss)
+        m?.hash?.let { put("hash", it) }
+        m?.items?.getOrNull(index)?.let { p -> p.step?.let { put("step", it) }; p.expectAt?.let { put("expectAt", it) } }
+        if (state == State.RUNNING || state == State.PAUSED) put("elapsedS", Math.round((clock() - startMs) / 100.0) / 10.0)
+        lateS?.let { put("lateS", Math.round(it * 10) / 10.0) }
     }
 }
 
@@ -335,6 +488,9 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
     private val triggerFile = File(dir, "triggers.json")
     private val fenceFile = File(dir, "fences.json")
     private val missionFile = File(dir, "mission.json")
+    private val planFile = File(dir, "plan.json")
+    /** The plan file a person sent, while its compiled mission is the one loaded. */
+    @Volatile private var loadedPlan: JsonObject? = null
     private val fired = HashMap<String, Long>()
     private val counts = HashMap<String, Int>()
     private val prepared = HashMap<String, Long>()
@@ -367,9 +523,12 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
 
     init {
         missions.onArrive = { item, i ->
-            rt.log.event("mission", "phone", "arrived", "reached point ${i + 1}")
+            val late = missions.lateS?.let { l -> if (abs(l) < 2) ", on time" else if (l > 0) ", ${l.toInt()} s late" else ", ${(-l).toInt()} s early" } ?: ""
+            rt.log.event("mission", "phone", "arrived", "reached point ${i + 1}" + (item.step?.let { " (step $it)" } ?: "") + late)
             item.triggers.forEach { fire(it, Source.BEHAVIOR, "waypoint ${i + 1}") }
         }
+        missions.onEvery = { t, item, i -> fire(t, Source.BEHAVIOR, "along the leg to point ${i + 1}" + (item.step?.let { " (step $it)" } ?: "")) }
+        missions.onMiss = { rt.log.event("mission", "phone", "miss", it) }
         runCatching {
             Json.parseToJsonElement(triggerFile.readText()).jsonObject.forEach { (v, a) ->
                 val m = triggers.getOrPut(v) { LinkedHashMap() }
@@ -378,6 +537,12 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         }
         runCatching { Json.parseToJsonElement(fenceFile.readText()).jsonObject.forEach { (v, o) -> fences[v] = Geo.parseFence(o.jsonObject) } }
         runCatching { Geo.parseMission(Json.parseToJsonElement(missionFile.readText()).jsonObject).first?.let { missions.load(it) } }
+        // A sent plan is kept as its file and compiled again: starting it checks it once more against the real home.
+        runCatching {
+            val plan = Json.parseToJsonElement(planFile.readText()).jsonObject
+            loadedPlan = plan
+            checkPlan(plan).mission?.let { missions.load(it) }
+        }
         runCatching { Json.parseToJsonElement(paramHistoryFile.readText()).jsonArray.forEach { paramHistory.addLast(it.jsonObject) } }
         runCatching { lastDiag = reportsDir.listFiles()?.maxByOrNull { it.name }?.let { Json.parseToJsonElement(it.readText()).jsonObject } }
     }
@@ -634,16 +799,31 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
                 if (!human) return no("not_permitted", "AI missions wait for a person. Use mission_propose")
                 if (missions.state == MissionEngine.State.RUNNING || missions.state == MissionEngine.State.PAUSED) return no("not_permitted", "stop the running mission first")
                 missions.load(m)
+                forgetPlan()
                 store(missionFile, Geo.missionJson(m).toString())
                 rt.log.event("mission", source.name, "uploaded", "${m.name}: ${m.items.size} points")
                 CommandResult.OK
+            }
+            "plan_upload" -> {
+                val plan = a["plan"] as? JsonObject ?: return no("malformed", "plan is required")
+                if (rt.fc.homeNow == null) return no("not_permitted", "set home first: a plan is checked against the real home before it's sent")
+                if (missions.state == MissionEngine.State.RUNNING || missions.state == MissionEngine.State.PAUSED) return no("not_permitted", "stop the running mission first")
+                val r = checkPlan(plan, p)
+                val m = r.mission
+                if (!r.ok || m == null) return CommandResult(false, "invalid", r.problems.joinToString("; ") { (it.step?.let { s -> "$s: " } ?: "") + it.text }, r.json)
+                missions.load(m)
+                loadedPlan = plan
+                store(planFile, plan.toString())
+                writer.execute { runCatching { missionFile.delete() } }
+                rt.log.event("mission", source.name, "uploaded", "${m.name}: plan ${r.hash}, ${m.items.size} points, about ${(r.json["summary"] as? JsonObject)?.d("timeS")?.toInt() ?: 0} s")
+                CommandResult(true, "ok", "plan ${r.hash} is on the phone", r.json)
             }
             "plan_check" -> {
                 val plan = a["plan"] as? JsonObject ?: return no("malformed", "plan is required")
                 val r = checkPlan(plan, p)
                 CommandResult(true, if (r.ok) "ok" else "problems", if (r.ok) "plan checks out" else "${r.problems.size} problem(s): ${r.problems.first().text}", r.json)
             }
-            "mission_start" -> missionStart(source, p)
+            "mission_start" -> missionStart(source, p, a.s("hash"))
             "mission_pause" -> {
                 if (missions.state != MissionEngine.State.RUNNING) return no("not_permitted", "no mission is running")
                 missions.pause(); rt.fc.force(FlightMode.HOLD, "mission paused"); CommandResult.OK
@@ -671,6 +851,7 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
                 if (bad.isNotEmpty()) return no("invalid", bad.joinToString("; "))
                 if (missions.state == MissionEngine.State.RUNNING || missions.state == MissionEngine.State.PAUSED) missions.abort()
                 missions.load(m)
+                forgetPlan()
                 missionStart(source, p)
             }
             "fence_set" -> {
@@ -704,10 +885,26 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         return CommandResult.OK
     }
 
-    private fun missionStart(source: Source, p: VehicleProfile): CommandResult {
-        if (missions.mission == null) return CommandResult.reject("not_permitted", "no mission loaded")
+    private fun forgetPlan() {
+        loadedPlan = null
+        writer.execute { runCatching { planFile.delete() } }
+    }
+
+    private fun missionStart(source: Source, p: VehicleProfile, hash: String? = null): CommandResult {
+        val loaded = missions.mission ?: return CommandResult.reject("not_permitted", "no mission loaded")
         if (rt.controller.currentAdapter is SimulatedCar) return CommandResult.reject("unsupported", "the simulator doesn't navigate by GPS. Choose another vehicle")
-        if (!p.missionsAllowed) return CommandResult.reject("unsupported", "missions aren't available for this vehicle type")
+        val plan = loadedPlan
+        if (plan != null && loaded.hash != null) {
+            // What runs is what was checked: compiled again now, against the real home, fence, triggers and settings.
+            if (hash != null && hash != loaded.hash) return CommandResult.reject("not_permitted", "that isn't the plan on the phone (${loaded.hash}). Send it again")
+            val r = checkPlan(plan, p)
+            if (!r.ok) return CommandResult.reject("not_permitted", "the plan no longer checks out: ${r.problems.first().let { (it.step?.let { s -> "$s: " } ?: "") + it.text }}")
+            if (r.hash != loaded.hash) return CommandResult.reject("not_permitted", "something changed since the plan was checked and sent (home, settings or the vehicle). Check it and send it again")
+        }
+        val planeMay = p.vehicleType == "plane" && loaded.hash != null && rt.params.get("NAV_PLANE_MISS") >= 1
+        if (!p.missionsAllowed && !planeMay) return CommandResult.reject("unsupported",
+            if (p.vehicleType == "plane") "a plane flies only checked plans, and only with NAV_PLANE_MISS set to 1. It's experimental and untested in the air"
+            else "missions aren't available for this vehicle type")
         val before = rt.fc.mode
         rt.fc.setModeForce(FlightMode.AUTO)
         val est = rt.fc.navEstimate()
@@ -1035,6 +1232,7 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         put("groundRun", groundRun.json())
         put("mission", missions.json())
         if (canSeePrivate) missions.mission?.let { put("missionData", Geo.missionJson(it)) }
+        if (canSeePrivate) loadedPlan?.let { put("planData", it) }
         put("fence", buildJsonObject { put("set", fence.isSet); put("breach", breachReason); if (canSeePrivate) put("data", Geo.fenceJson(fence)) })
         put("triggers", triggersJson())
         put("diag", diagRunning)

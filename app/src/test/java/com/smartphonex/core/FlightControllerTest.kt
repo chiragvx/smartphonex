@@ -309,6 +309,41 @@ class FlightControllerTest {
         }
     }
 
+    @Test fun aPlanIsFollowedAlongItsLineNotStraightAtThePoint() {
+        type = "car"
+        val fr = LocalFrame(28.0, 77.0)
+        val beside = fr.xy(28.0, 77.0) + V2(50.0, 500.0)
+        val g = GpsFix(fr.lat(beside), fr.lon(beside), 100.0, 1.0, 0.0, 3.0, 10, nowMs)
+        val to = V2(0.0, 1000.0)
+        val h = fc.lineHeading(g, 28.0, 77.0, fr.lat(to), fr.lon(to))
+        // 50 m east of a line due north, aiming 5 m ahead on it: nearly due west, back to the line.
+        assertEquals(275.7, h, 0.5)
+        val direct = Navigation.bearingDeg(g.lat, g.lon, fr.lat(to), fr.lon(to))
+        assertTrue("straight at the point would be almost north: $direct", direct > 350)
+    }
+
+    @Test fun aPlaneClimbsGentlyAndGivesUpHeightBeforeSpeed() {
+        type = "plane"
+        feed(0.0, 0.0, 0.0, 3.0)
+        gpsAt(28.0, 77.0)
+        assertNull(fc.setHomeHere())
+        // 50 m below the plan: climb, but no steeper than NAV_PITCH_UP, with more throttle.
+        val (pitch, thr) = fc.planeHeight(50.0, 0.4)
+        assertEquals(params.get("NAV_PITCH_UP"), pitch, 1e-9)
+        assertEquals(0.9, thr, 1e-9)
+        assertEquals("above it: down, limited", -params.get("NAV_PITCH_DN"), fc.planeHeight(-50.0, 0.4).first, 1e-9)
+
+        // The propeller says 9 m/s, under the safe 11: no climbing, full throttle.
+        listOf("MIC_PROP" to 2.0, "PROP_K0" to 9.0, "PROP_K1" to 0.0, "PROP_K2" to 0.0, "PROP_K3" to 0.0, "PROP_KQ" to 1.4, "PROP_NMIN" to 140.0, "PROP_NMAX" to 160.0,
+            "PROP_CELLS" to (1L shl PropAirspeed.cell(150.0, 0.6, 140.0, 160.0)).toDouble()).forEach { (n, v) -> params.set(n, v) }
+        val slow = FlightController(params, log, { type }, { nowMs }, { nowNs })
+        repeat(10) { nowMs += 100; slow.process(ActuatorOutput(0.6, 0.0), true, 0.1); slow.onPropTone(PropTone.Tone(300.0, 30.0, -20.0, 150.0, listOf(2, 4, 7))) }
+        val (p2, t2) = slow.planeHeight(50.0, 0.4)
+        assertTrue("never pitches up when slow: $p2", p2 <= 0.0)
+        assertEquals(params.get("NAV_THR_MAX"), t2, 1e-9)
+        assertTrue(log.allEvents().any { it.code == "speed_protect" })
+    }
+
     @Test fun lostGpsLeavesReturnHome() {
         type = "plane"
         feed(0.0, 0.0, 0.0, 3.0)

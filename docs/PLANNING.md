@@ -156,10 +156,33 @@ Stalling is never a fallback: in flight a plane keeps its speed before its altit
 | Stage | What | State |
 |---|---|---|
 | 1 | Format, compiler, timeline, enforced checks, `plan_check`, settings. Failsafe fix: a flying plane is never cut by an automatic failsafe. Exact leg check for today's missions | **Built**, 12 tests, checked on the phone |
-| 2 | Running a compiled plan: upload with its hash and the real home, the mission engine following the compiled points, line following (cross-track) so it flies the path that was checked, miss rules in flight, a plane's speed before altitude, missions for planes behind their own setting | Next |
+| 2 | Running a compiled plan (below) | **Built**, 9 tests. Untested in the air |
 | 3 | Fence layers in flight: a turn-back line before the fence for planes, the outer limit, and a staged contingency chooser (link lost, battery can't make home, motor out heard by the microphone, GPS lost) that goes to the best reachable zone. Terminate is in the format but stays off | |
 | 4 | Ground station: Plan edits the file, checks it live, and shows the path as flown, action markers, zones and gaps, an altitude profile and the timeline. Inserting, reordering and multi-editing points; dragging fence corners. Saved plans on the phone, in backups | |
 | 5 | Operate shows expected against actual times and ETAs; Review shows the plan against what happened. A plane simulator, so all of this runs end to end without hardware | |
+
+#### Running a plan (stage 2)
+
+- **Sending.** `plan_upload` compiles the plan against the phone's real home and loads it only if it checks out. The
+  file is kept and compiled again after a restart. `mission_start` compiles it once more and refuses if it no longer
+  checks out, or if its hash changed: what runs is what was checked.
+- **Following the line.** The vehicle aims `NAV_LOOKAHEAD` metres ahead on the straight line from the last point, so
+  it flies the path that was checked rather than cutting corners towards each point.
+- **Distance triggers** fire at 0, every, 2 × every… metres along the leg while the vehicle is on the line, the same
+  count the timeline shows. Any still due fire on arrival.
+- **Orbits** go round their laps; **holds** circle round the point (planes) or stop.
+- **Miss rules in flight.** A leg taking more than twice its planned time plus 30 s applies the arrival rule.
+  Arriving more than the tolerance off the altitude applies the altitude rule: circling at the point until within
+  tolerance or `maxS`, then `then`. `abort` flies home. Each is logged with its step.
+- **Lateness.** Each arrival is compared with the plan's expected time ("reached point 4 (step field), 12 s late"), and
+  `ops.mission` carries `lateS`.
+- **A plane's height.** Pitch follows the height error (`NAV_ALT_P`), no steeper than `NAV_PITCH_UP` so a climb never
+  costs speed, with more throttle when low (`NAV_THR_P`). When the propeller says it's below `PLAN_SPEED_MIN` it stops
+  climbing and opens the throttle to `NAV_THR_MAX`: it gives up height, never speed. Height above home is barometric
+  when the barometer was also read at home, else GPS.
+- **Landing.** After the touchdown point: motor off, wings level, nose slightly up; disarmed once it's been down and
+  still for 5 s.
+- **Planes** run only sent plans, and only with `NAV_PLANE_MISS` set to 1. Old-style missions never fly a plane.
 
 Done when a plane plan with a survey, a too-steep climb and a turn near the fence is caught when planning with clear
 fixes; flown in the simulator, it handles a forced altitude miss and a link loss by its rules and goes to the right zone;
@@ -185,3 +208,7 @@ vehicles changing their own plan beyond the miss rules.
 The compiler's numbers are only as good as the settings. Before flights beyond line of sight these need real flights:
 climb, sink and glide ratio; the turning radius in wind; the motor-out signal from the microphone; and the contingency
 chooser with a real link loss.
+
+Running a plan on a plane is untested in the air: line following, the height controller and its gains, speed
+protection (which depends on the propeller's airspeed estimate), hand-launched takeoff and the landing glide. Fly the
+first plans with a pilot ready to take over, on a vehicle that has flown well in STABILIZE.

@@ -90,7 +90,7 @@ Tested only in software, or with stand-ins:
 
 `hello` now carries `protocol: 2` and `caps`, which say what to show for this device. A client that doesn't see `protocol` is talking to an older app.
 
-The phone also sends `ops` twice a second: `readiness`, `armProblem`, `flightMode`, `owner`, `killed`, `mission`, `fence`, `triggers`, `trims`, `checklist`, `connections`, `caps`, `diag`, `report` and `ground`. Viewers don't get `missionData` or the fence's shape. Each entry in `readiness` and `connections` is `{id, label, status, detail, fix}`.
+The phone also sends `ops` twice a second: `readiness`, `armProblem`, `flightMode`, `owner`, `killed`, `mission`, `fence`, `triggers`, `trims`, `checklist`, `connections`, `caps`, `diag`, `report` and `ground`. Viewers don't get `missionData`, `planData` or the fence's shape. For a sent plan, `mission` also has `hash`, the current `step`, `expectAt`, `elapsedS` and `lateS` (seconds behind the plan at the last point reached; negative is early). Each entry in `readiness` and `connections` is `{id, label, status, detail, fix}`.
 
 New `cmd` values, each answered by the usual `ack`. An `ack` for a command that asks something carries the answer in `data`:
 
@@ -108,7 +108,9 @@ New `cmd` values, each answered by the usual `ack`. An `ack` for a command that 
 | `trigger_save` | `trigger` |
 | `trigger_delete`, `trigger_prepare`, `trigger_fire` | `id` |
 | `mission_upload` | `mission`: `name`, `onEnd`, `onLinkLoss`, `items[]` of `lat`, `lon`, `alt`, `throttle`, `holdS`, `radiusM`, `triggers[]` |
-| `mission_start`, `mission_pause`, `mission_resume`, `mission_skip`, `mission_abort` | none |
+| `plan_upload` | `plan`. People only. Needs home set: the plan is compiled against the real home, and loaded only if it checks out. The ack's `data` is the same as `plan_check`'s. Replaces any loaded mission; `ops.planData` then holds the file |
+| `mission_start` | optional `hash`. For a sent plan it's compiled again and refused if it no longer checks out or its hash changed (home, settings or vehicle). A plane runs only sent plans, and only with `NAV_PLANE_MISS` 1 |
+| `mission_pause`, `mission_resume`, `mission_skip`, `mission_abort` | none |
 | `goto` | `lat`, `lon` |
 | `plan_check` | `plan`: a plan file, `smartphonex.plan/1` (see `docs/PLANNING.md`). Changes nothing. Accepted with `code` `ok` or `problems`, and the compiled plan in the ack's `data`: `ok`, `problems[]`, `warnings[]`, `hash`, `summary`, `assumptions`, `timeline[]`, `gaps[]`, `zones[]`, `points[]`, `path[]`, `misses`, and `plan` with every step's id filled in. AI may use it |
 | `fence_set` | `fence`: `polygon`, `keepOut`, `maxDistM`, `maxAltM`, `action` |

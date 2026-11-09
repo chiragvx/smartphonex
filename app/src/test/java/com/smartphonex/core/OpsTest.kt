@@ -7,6 +7,8 @@ import org.junit.Before
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
+import kotlin.math.cos
+import kotlin.math.sin
 
 private const val LAT = 28.6
 private const val LON = 77.2
@@ -76,6 +78,93 @@ class MissionEngineTest {
         assertEquals(listOf(0, 1), arrived)
         assertEquals("home", (end as MissionEngine.Step.End).action)
         assertEquals(MissionEngine.State.DONE, e.state)
+    }
+
+    private fun planned(north: Double, every: List<Pair<String, Double>> = emptyList(), alt: Double? = null, miss: Misses? = null, expectS: Double? = null, expectAt: Double? = null, orbit: OrbitSpec? = null, holdS: Double = 0.0) =
+        MissionItem(north(north), LON, alt, radiusM = 5.0, every = every, miss = miss, expectS = expectS, expectAt = expectAt, orbit = orbit, holdS = holdS, line = true, step = "s")
+    private val defaults = PlanCompiler.defaults("plane")
+
+    @Test fun aCompiledPlanFollowsTheLineFromTheLastPoint() {
+        val e = MissionEngine { now }
+        e.load(Mission("p", listOf(planned(100.0), planned(200.0)), hash = "h"))
+        e.start()
+        val s = e.step(fix(north(10.0))) as MissionEngine.Step.GoTo
+        assertEquals("the first leg starts where it was", north(10.0), s.fromLat!!, 1e-9)
+        e.step(fix(north(98.0)))
+        val s2 = e.step(fix(north(110.0))) as MissionEngine.Step.GoTo
+        assertEquals("then from the point it reached", north(100.0), s2.fromLat!!, 1e-9)
+    }
+
+    @Test fun distanceTriggersFireAlongTheLineAsThePlanCountedThem() {
+        val e = MissionEngine { now }
+        val fired = ArrayList<String>()
+        e.onEvery = { t, _, _ -> fired += t }
+        e.load(Mission("p", listOf(planned(0.0), planned(100.0, every = listOf("photo" to 20.0))), hash = "h"))
+        e.start()
+        var m = 0.0
+        while (e.index < 2 && m < 120) { e.step(fix(north(m))); m += 3.0 }
+        // 0, 20, 40, 60, 80 and 100 m: floor(100 / 20) + 1, the plan's count. The last fires on arrival.
+        assertEquals(6, fired.size)
+    }
+
+    @Test fun aLegTakingFarTooLongFollowsItsArrivalRule() {
+        fun run(rule: Miss): Pair<MissionEngine, MissionEngine.Step> {
+            now = 0
+            val e = MissionEngine { now }
+            e.load(Mission("p", listOf(planned(100.0, miss = defaults.copy(arrival = rule), expectS = 10.0), planned(200.0)), hash = "h"))
+            e.start()
+            e.step(fix(LAT))
+            now = 49_000
+            assertTrue("not yet: twice the plan plus 30 s", e.step(fix(LAT)) is MissionEngine.Step.GoTo)
+            now = 51_000
+            return e to e.step(fix(LAT))
+        }
+        val (aborted, a) = run(Miss("abort"))
+        assertTrue(a is MissionEngine.Step.Abort)
+        assertEquals(MissionEngine.State.ABORTED, aborted.state)
+        val (skipped, s) = run(Miss("skip"))
+        assertEquals(1, skipped.index)
+        assertTrue(s is MissionEngine.Step.GoTo)
+        val (held, h) = run(Miss("hold", maxS = 5.0, then = "abort"))
+        assertTrue(h is MissionEngine.Step.Wait)
+        now = 57_000
+        assertTrue("waiting is limited, then its rule", held.step(fix(LAT)) is MissionEngine.Step.Abort)
+    }
+
+    @Test fun arrivingLowCirclesUpToItsLimitThenFollowsTheRule() {
+        val rule = defaults.copy(altitude = Miss("circle", 10.0, 30.0, "abort"))
+        fun engine(): MissionEngine { now = 0; return MissionEngine { now }.also { it.load(Mission("p", listOf(planned(100.0, alt = 100.0, miss = rule), planned(300.0, alt = 100.0)), hash = "h")); it.start() } }
+        val e = engine()
+        assertTrue(e.step(fix(north(99.0)), 60.0) is MissionEngine.Step.Wait)
+        now = 10_000
+        assertTrue("still climbing", e.step(fix(north(99.0)), 80.0) is MissionEngine.Step.Wait)
+        now = 20_000
+        assertTrue("within 10 m: on to the next point", e.step(fix(north(99.0)), 93.0) is MissionEngine.Step.GoTo)
+        assertEquals(1, e.index)
+        val stuck = engine()
+        stuck.step(fix(north(99.0)), 60.0)
+        now = 31_000
+        assertTrue("it can't climb: after 30 s, abort", stuck.step(fix(north(99.0)), 62.0) is MissionEngine.Step.Abort)
+    }
+
+    @Test fun orbitsGoRoundTheirLapsAndLatenessIsMeasured() {
+        now = 0
+        val e = MissionEngine { now }
+        val c = OrbitSpec(north(100.0), LON, 50.0, 1.0, true)
+        e.load(Mission("p", listOf(planned(50.0, orbit = c, expectAt = 10.0), planned(300.0)), hash = "h"))
+        e.start()
+        now = 15_000
+        assertTrue(e.step(fix(north(50.0))) is MissionEngine.Step.Circle)
+        assertEquals("5 s behind the plan", 5.0, e.lateS!!, 1e-9)
+        val fr = LocalFrame(north(100.0), LON)
+        // Round clockwise from the south side, in 10° steps.
+        for (k in 1..36) {
+            val a = Math.toRadians(-90.0 - k * 10.0)
+            val p = V2(cos(a), sin(a)) * 50.0
+            val s = e.step(GpsFix(fr.lat(p), fr.lon(p), 0.0, 0.0, 0.0, 3.0, 10, now))
+            if (k < 36) assertTrue("lap not done at ${k * 10}°", s is MissionEngine.Step.Circle)
+            else assertTrue(s is MissionEngine.Step.GoTo)
+        }
     }
 
     @Test fun holdsWithNoPositionPausedOrIdle() {
@@ -401,6 +490,76 @@ class OpsRuntimeTest {
         assertTrue(far.message, "from home" in far.message)
         assertTrue("the AI may check plans", ops("plan_check", Source.AI) { put("plan", plan(100.0)) }.accepted)
         assertNull("checking changes nothing", rt.ops.missions.mission)
+    }
+
+    private fun roverPlan(north: Double) = buildJsonObject {
+        put("format", PlanCompiler.FORMAT); put("name", "walk")
+        putJsonArray("steps") {
+            addJsonObject { put("do", "goto"); put("id", "out"); put("at", buildJsonArray { add(north(north)); add(LON) }) }
+            addJsonObject { put("do", "home"); put("id", "back") }
+        }
+    }
+
+    @Test fun whatRunsIsWhatWasCheckedAndSent() {
+        assertEquals("needs the real home", "not_permitted", ops("plan_upload") { put("plan", roverPlan(60.0)) }.code)
+        gps()
+        assertNull(rt.fc.setHomeHere())
+        assertFalse("a person sends plans", ops("plan_upload", Source.AI) { put("plan", roverPlan(60.0)) }.accepted)
+        val bad = ops("plan_upload") { put("plan", roverPlan(60.0).let { JsonObject(it + ("format" to JsonPrimitive("nope"))) }) }
+        assertEquals("invalid", bad.code)
+        assertNotNull("the problems come back with it", bad.data)
+
+        val up = ops("plan_upload") { put("plan", roverPlan(60.0)) }
+        assertTrue(up.message, up.accepted)
+        val hash = rt.ops.missions.mission!!.hash!!
+        assertEquals(hash, up.data!!["hash"]!!.jsonPrimitive.content)
+        assertEquals("out", rt.ops.missions.mission!!.items[0].step)
+
+        assertTrue(ops("mission_start") { put("hash", "0000") }.message.contains("isn't the plan"))
+        // A setting it was planned with changes: the plan has to be checked and sent again.
+        rt.params.set("PLAN_SPEED", 3.0)
+        val changed = ops("mission_start") { put("hash", hash) }
+        assertFalse(changed.accepted)
+        assertTrue(changed.message, "something changed" in changed.message)
+        rt.params.set("PLAN_SPEED", 2.0)
+        // A fence that now cuts across it.
+        ops("fence_set") { put("fence", buildJsonObject { put("maxDistM", 30.0); put("action", "hold") }) }
+        assertTrue(ops("mission_start").message.contains("no longer checks out"))
+        ops("fence_set") { put("fence", buildJsonObject { put("maxDistM", 0.0) }) }
+
+        assertTrue(ops("mission_start") { put("hash", hash) }.accepted)
+        tick(2)
+        assertEquals(Mode.AUTO, mode)
+        assertEquals("out", rt.ops.opsJson(true)["mission"]!!.jsonObject["step"]!!.jsonPrimitive.content)
+
+        // It survives a restart as its file, compiled again.
+        rt.ops.flush()
+        val again = Ops(rt, dir)
+        assertEquals(hash, again.missions.mission?.hash)
+    }
+
+    @Test fun aPlaneFliesOnlyCheckedPlansAndOnlyWhenAllowed() {
+        rt.profiles.select("plane")
+        gps()
+        assertNull(rt.fc.setHomeHere())
+        val plan = buildJsonObject {
+            put("format", PlanCompiler.FORMAT)
+            putJsonArray("steps") { addJsonObject { put("do", "goto"); put("at", buildJsonArray { add(north(300.0)); add(LON) }); put("alt", 60.0) }; addJsonObject { put("do", "home"); put("alt", 60.0) } }
+        }
+        val up = ops("plan_upload") { put("plan", plan) }
+        assertTrue(up.message, up.accepted)
+        val r = ops("mission_start")
+        assertEquals("unsupported", r.code)
+        assertTrue(r.message, "NAV_PLANE_MISS" in r.message)
+        rt.params.set("NAV_PLANE_MISS", 1.0)
+        val r2 = ops("mission_start")
+        assertTrue(r2.message, r2.accepted)
+        assertEquals(MissionEngine.State.RUNNING, rt.ops.missions.state)
+        cmd(Command.Stop)
+        tick(2)
+        // An old-style mission still can't fly a plane.
+        assertTrue(ops("mission_upload") { put("mission", mission(north(50.0))) }.accepted)
+        assertTrue(ops("mission_start").message.contains("NAV_PLANE_MISS"))
     }
 
     @Test fun aFlyingPlaneThatHitsAStopFenceFliesHomeInsteadOfCuttingTheMotor() {

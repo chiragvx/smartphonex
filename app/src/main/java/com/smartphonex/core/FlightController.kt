@@ -330,6 +330,19 @@ class FlightController(
     /** When the airspeed fit was last updated in this run of the app; 0 when it came from an earlier one. */
     private var propFitAtMs = 0L
 
+    private fun baroAltM(): Double? = pressureHpa?.takeIf { nowMs() - lastBaroWallMs < 2000 }?.let { 44330.0 * (1 - Math.pow(it / 1013.25, 0.1903)) }
+    /** The barometer's height when home was set, so heights above home compare like with like. */
+    private var homeBaroM: Double? = null
+
+    /** Height above home: from the barometer when it was read at home too, else from GPS. Null without a home. */
+    fun heightAboveHome(): Double? = synchronized(lock) {
+        val h = home ?: return null
+        val b = baroAltM(); val hb = homeBaroM
+        if (b != null && hb != null) return b - hb
+        val g = navFix() ?: return null
+        g.altM - h.altM
+    }
+
     /** Barometric height when there's a barometer (smoother than GPS), else GPS altitude. */
     private fun altitudeM(g: GpsFix): Double = pressureHpa?.takeIf { nowMs() - lastBaroWallMs < 2000 }?.let { 44330.0 * (1 - Math.pow(it / 1013.25, 0.1903)) } ?: g.altM
 
@@ -492,6 +505,7 @@ class FlightController(
     fun setHomeHere(): String? = synchronized(lock) {
         val g = goodFix() ?: return gpsProblem()
         home = g
+        homeBaroM = baroAltM()
         arrivedHome = false
         log.event("fc", "phone", "home", "home set, accuracy ${g.accuracyM.toInt()} m")
         null
@@ -589,6 +603,7 @@ class FlightController(
 
     private fun enterMode(m: FlightMode, why: String) {
         if (m != mode) log.event("flightmode", "phone", m.name, "${mode.name} -> ${m.name}: $why")
+        if (m != FlightMode.AUTO) landing = false
         mode = m
         rollPid.reset(); pitchPid.reset(); yawPid.reset()
         targetHeading = null
@@ -611,7 +626,8 @@ class FlightController(
         enabled = true
         val tStart = System.nanoTime()
         val now = nowMs()
-        if (armed && !lastArmed && home == null) goodFix()?.let { home = it; log.event("fc", "phone", "home", "home set at arming") }
+        if (armed && !lastArmed && home == null) goodFix()?.let { home = it; homeBaroM = baroAltM(); log.event("fc", "phone", "home", "home set at arming") }
+        if (!armed) landing = false
         if (armed && !lastArmed) { armedAtMs = now; propBackground.removeAll { now - it.atMs > PROP_BACKGROUND_MS } }
         lastArmed = armed
         monitor(now, armed)
@@ -671,12 +687,12 @@ class FlightController(
         return ActuatorOutput(throttle, -yawCmd, input.pitch, input.roll)
     }
 
-    private fun steerToHeading(input: ActuatorOutput, heading: Double, throttle: Double, dt: Double): ActuatorOutput {
+    private fun steerToHeading(input: ActuatorOutput, heading: Double, throttle: Double, dt: Double, pitch: Double? = null): ActuatorOutput {
         targetHeading = heading
         val err = Frames.wrap180(heading - attitude.yaw)
         return if (isPlane()) {
             val bank = (p("HDG_P") * err).coerceIn(-p("ANG_MAX_ROLL"), p("ANG_MAX_ROLL"))
-            planeControl(input, bank, input.pitch * p("ANG_MAX_PITCH"), throttle, dt)
+            planeControl(input, bank, pitch ?: (input.pitch * p("ANG_MAX_PITCH")), throttle, dt)
         } else {
             groundRate(input, throttle, p("HDG_P") * p("ANG_P") * err, dt)
         }
@@ -719,22 +735,112 @@ class FlightController(
         }
         if (navWaitSince != 0L) { log.event("gps", "phone", "resumed", "Position good again: mission continues"); navWaitSince = 0L }
         val g = navFix()
-        return when (val s = missions?.step(g)) {
+        if (landing) return landOut(input, dt)
+        return when (val s = missions?.step(g, if (isPlane()) heightAboveHome() else null)) {
             is MissionEngine.Step.GoTo -> {
                 if (g == null) holdHere(input, dt)
-                else steerToHeading(input, Navigation.bearingDeg(g.lat, g.lon, s.lat, s.lon), s.throttle ?: p("WP_THROTTLE"), dt)
+                else {
+                    val heading = if (s.fromLat != null && s.fromLon != null) lineHeading(g, s.fromLat, s.fromLon, s.lat, s.lon)
+                        else Navigation.bearingDeg(g.lat, g.lon, s.lat, s.lon)
+                    val base = s.throttle ?: p("WP_THROTTLE")
+                    val (pitch, thr) = s.alt?.takeIf { isPlane() }?.let { planeHeight(it, base) } ?: (null to base)
+                    steerToHeading(input, heading, thr, dt, pitch)
+                }
+            }
+            is MissionEngine.Step.Circle -> if (g == null) holdHere(input, dt) else circleAround(input, g, s.lat, s.lon, s.radiusM, s.cw, s.alt, s.throttle, dt)
+            is MissionEngine.Step.Wait -> when {
+                !isPlane() -> groundRate(input, 0.0, 0.0, dt)
+                g == null -> holdHere(input, dt)
+                else -> circleAround(input, g, s.lat, s.lon, maxOf(s.radiusM, planeTurnRadius()), true, s.alt, null, dt)
+            }
+            is MissionEngine.Step.Abort -> {
+                log.event("mission", "phone", "aborted", "mission aborted by its own rule (${s.why}): returning home")
+                enterMode(FlightMode.RETURN_HOME, "mission aborted")
+                returnHome(input, dt)
             }
             is MissionEngine.Step.End -> {
                 log.event("mission", "phone", "complete", "mission complete: ${s.action}")
                 when (s.action) {
                     "home" -> enterMode(FlightMode.RETURN_HOME, "mission complete")
                     "stop" -> { enterMode(FlightMode.HOLD, "mission complete"); missionStopRequest = true }
+                    "land" -> { landing = true; landingSinceMs = nowMs(); log.event("mission", "phone", "landing", "touchdown point reached: motor off, wings level, gliding in") }
                     else -> enterMode(FlightMode.HOLD, "mission complete")
                 }
-                holdHere(input, dt)
+                if (landing) landOut(input, dt) else holdHere(input, dt)
             }
             else -> holdHere(input, dt)
         }
+    }
+
+    // --- Following a plan.
+
+    /**
+     * Follows the straight line from one point to the next, as the plan was checked: aims at a point [NAV_LOOKAHEAD]
+     * metres further along the line from where the vehicle is beside it, so it comes back onto the line and stays there.
+     */
+    internal fun lineHeading(g: GpsFix, fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): Double {
+        val fr = LocalFrame(fromLat, fromLon)
+        val b = fr.xy(toLat, toLon)
+        val v = fr.xy(g.lat, g.lon)
+        if (b.len < 1e-6) return Navigation.bearingDeg(g.lat, g.lon, toLat, toLon)
+        val u = b.unit()
+        val ahead = (v.dot(u) + p("NAV_LOOKAHEAD")).coerceAtMost(b.len)
+        val aim = u * ahead
+        return Frames.norm360(Math.toDegrees(atan2(aim.x - v.x, aim.y - v.y)))
+    }
+
+    /** Goes round a centre at [radiusM], aiming a little ahead on the circle. */
+    private fun circleAround(input: ActuatorOutput, g: GpsFix, lat: Double, lon: Double, radiusM: Double, cw: Boolean, alt: Double?, throttle: Double?, dt: Double): ActuatorOutput {
+        val fr = LocalFrame(lat, lon)
+        val v = fr.xy(g.lat, g.lon)
+        val theta = atan2(v.y, v.x)
+        val step = (p("NAV_LOOKAHEAD") / radiusM).coerceIn(0.05, 1.0) * if (cw) -1 else 1
+        val aim = V2(cos(theta + step), sin(theta + step)) * radiusM
+        val heading = Frames.norm360(Math.toDegrees(atan2(aim.x - v.x, aim.y - v.y)))
+        val base = throttle ?: p("WP_THROTTLE")
+        val (pitch, thr) = alt?.takeIf { isPlane() }?.let { planeHeight(it, base) } ?: (null to base)
+        return steerToHeading(input, heading, thr, dt, pitch)
+    }
+
+    private fun planeTurnRadius(): Double { val v = p("PLAN_SPEED"); return v * v / (9.80665 * kotlin.math.tan(Math.toRadians(p("PLAN_BANK")))) }
+
+    @Volatile private var speedProtected = false
+
+    /**
+     * A plane's pitch and throttle to reach a height. Speed comes first: climbs are limited to [NAV_PITCH_UP], and when
+     * the propeller says the plane is below its safe minimum it stops climbing and opens the throttle, giving up height
+     * rather than speed. It never stalls to make a height; the altitude miss rule decides what happens instead.
+     */
+    internal fun planeHeight(target: Double, base: Double): Pair<Double, Double> {
+        // Without a height, hold level; speed protection still applies.
+        val err = heightAboveHome()?.let { target - it } ?: 0.0
+        var pitch = (p("NAV_ALT_P") * err).coerceIn(-p("NAV_PITCH_DN"), p("NAV_PITCH_UP"))
+        var thr = (base + p("NAV_THR_P") * err).coerceIn(p("NAV_THR_MIN"), p("NAV_THR_MAX"))
+        val air = propAirspeed(nowMs())
+        val vmin = p("PLAN_SPEED_MIN")
+        val slow = air != null && vmin > 0 && air < vmin
+        if (slow) { pitch = minOf(pitch, 0.0); thr = p("NAV_THR_MAX") }
+        if (slow != speedProtected) {
+            speedProtected = slow
+            log.event("nav", "phone", if (slow) "speed_protect" else "speed_ok",
+                if (slow) "Airspeed about ${"%.0f".format(air)} m/s, under the safe ${"%.0f".format(vmin)}: not climbing, full throttle, until it's back" else "Airspeed back above the safe minimum")
+        }
+        return pitch to thr
+    }
+
+    /** Landing, after the touchdown point: wings level on the heading it has, motor off, nose slightly up. */
+    @Volatile var landing = false; private set
+    private var landingSinceMs = 0L
+    private fun landOut(input: ActuatorOutput, dt: Double): ActuatorOutput {
+        targetHeading = targetHeading ?: attitude.yaw
+        val err = Frames.wrap180(targetHeading!! - attitude.yaw)
+        // Down and still for a few seconds: landed, so the controller disarms.
+        updateFlying(nowMs())
+        if (flyingWhy == null && nowMs() - landingSinceMs > 5000 && !missionStopRequest) {
+            log.event("mission", "phone", "landed", "landed: disarming")
+            missionStopRequest = true
+        }
+        return planeControl(input, (p("HDG_P") * err).coerceIn(-10.0, 10.0), 2.0, 0.0, dt)
     }
 
     private var missionStopRequest = false

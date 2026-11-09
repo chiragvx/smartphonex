@@ -132,7 +132,8 @@ data class PlanIssue(val step: String?, val text: String, val lat: Double? = nul
 /** Where and with what the plan is checked. [triggers] maps each trigger id to whether it's dangerous. */
 class PlanContext(val perf: PlanPerf, val home: GpsFix?, val fence: Fence, val triggers: Map<String, Boolean>)
 
-class PlanResult(val ok: Boolean, val problems: List<PlanIssue>, val warnings: List<PlanIssue>, val hash: String?, val json: JsonObject)
+/** [mission] is what the vehicle runs, when the plan checks out. */
+class PlanResult(val ok: Boolean, val problems: List<PlanIssue>, val warnings: List<PlanIssue>, val hash: String?, val json: JsonObject, val mission: Mission? = null)
 
 object PlanCompiler {
     const val FORMAT = "smartphonex.plan/1"
@@ -467,6 +468,9 @@ object PlanCompiler {
         inner class Sim(val windy: Boolean, val report: Boolean) {
             val samples = ArrayList<Smp>()
             val events = ArrayList<Ev>()
+            /** When each point is reached, and left after its hold or orbit, in seconds from the start. */
+            val arriveAt = DoubleArray(navs.size)
+            val leaveAt = DoubleArray(navs.size)
             val everyCount = LinkedHashMap<String, DoubleArray>() // step|trigger -> count, first tm, first tf, last tm, last tf, every
             var pos = V2(0.0, 0.0); var heading = V2(0.0, 1.0); var alt = 0.0
             var tm = 0.0; var tf = 0.0; var dist = 0.0
@@ -605,7 +609,7 @@ object PlanCompiler {
                 alt = if (perf.plane && takeoffDir == null) first.alt else 0.0
                 add()
                 ev("start", "start")
-                for (n in navs) {
+                for ((ni, n) in navs.withIndex()) {
                     step = n.step; phase = n.phase; speed = n.speed; target = if (perf.plane) n.alt else 0.0
                     if (n.first && !n.last) ev("begin", "begins ${n.kind}")
                     // Distance triggers fire along the straight part of a leg, once the turn onto it is done.
@@ -632,6 +636,7 @@ object PlanCompiler {
                         val a = everyCount.getOrPut(k) { doubleArrayOf(0.0, tm0, tf0, 0.0, 0.0, every, start.x, start.y, alt) }
                         a[0] += floor(l / every + 1e-6) + 1; a[3] = tm; a[4] = tf
                     }
+                    arriveAt[ni] = tm + tf
                     arrive(n)
                     n.triggers.forEach { ev("action", "trigger $it") }
                     n.notes.forEach { ev("notify", it) }
@@ -644,6 +649,7 @@ object PlanCompiler {
                         ev("orbit", "orbits ${r1(o.laps)} × at ${o.r.toInt()} m")
                         circle(o.r, o.laps, o.cw, timed = true, centre = o.c)
                     }
+                    leaveAt[ni] = tm + tf
                     if (n.last) when {
                         n.kind == "touchdown" -> ev("land", "touches down")
                         n.first -> ev("arrive", "arrives (${n.kind})")
@@ -884,7 +890,16 @@ object PlanCompiler {
                 put("misses", misses.json())
                 put("plan", JsonObject(plan + ("steps" to steps)))
             }
-            return PlanResult(ok, problems, warnings, if (ok) hash else null, json)
+            // What the vehicle runs: the compiled points, with the times this simulation expects, so the phone can
+            // tell when a leg is taking far too long and how late it is.
+            val mission = if (!ok) null else Mission(name.take(60), navs.mapIndexed { i, n ->
+                MissionItem(
+                    r7(fr.lat(n.p)), r7(fr.lon(n.p)), if (perf.plane) n.alt else null, null, n.holdS, n.radius, n.triggers,
+                    n.speed, n.step, n.every, n.orbit?.let { o -> OrbitSpec(r7(fr.lat(o.c)), r7(fr.lon(o.c)), o.r, o.laps, o.cw) }, n.miss,
+                    expectS = r1(sim.arriveAt[i] - if (i == 0) 0.0 else sim.leaveAt[i - 1]), expectAt = r1(sim.arriveAt[i]), line = true, kind = n.kind,
+                )
+            }, if (landed) "land" else onEnd, onLinkLoss, hash)
+            return PlanResult(ok, problems, warnings, if (ok) hash else null, json, mission)
         }
     }
 }
