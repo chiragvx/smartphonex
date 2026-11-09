@@ -159,7 +159,7 @@ Stalling is never a fallback: in flight a plane keeps its speed before its altit
 | 2 | Running a compiled plan (below) | **Built**, 9 tests. Untested in the air |
 | 3 | Safety in flight (below): a plane turns back before the fence, an outer limit, and a contingency chooser that goes to the best zone it can reach. Terminate stays off | **Built**, 6 tests. Untested in the air |
 | 4 | The Plan screen (below) | **Built**, browser-checked on the phone |
-| 5 | Operate shows expected against actual times and ETAs; Review shows the plan against what happened. A plane simulator, so all of this runs end to end without hardware | |
+| 5 | Expected against actual, and a plane simulator (below) | **Built**, flown end to end on the phone |
 
 #### Running a plan (stage 2)
 
@@ -226,9 +226,41 @@ All of this is decided on the phone and works with no link.
   `plans/`, so backups carry them. Plans download and open as files; GeoJSON opens as points and a fence.
 - `tools/gs-check.mjs` drives it in a real browser against the phone, for a car and a plane.
 
+#### Expected against actual, and the simulated plane (stage 5)
+
+- **Operate** shows a sent plan's step, time so far against the plan's total, and how late or early it is; flight time
+  left; where it's diverting and why; and a stopped motor. The map shows the plan's zones and the diversion target.
+- **Review** has *Plan against actual*: each point reached, ahead of or behind its expected time, and what didn't go to
+  plan (miss rules, diversions, a stopped motor). Steadily late means `PLAN_SPEED` or `PLAN_CLIMB` are too hopeful.
+- **The simulated plane** (vehicle *Simulated plane*) is flown by the real autopilot, mission engine and contingency
+  rules. Its attitude, GPS, barometer and propeller tone replace the phone's sensors, which are ignored while it's
+  selected; the controller's real commands move its surfaces and motor. It's tuned to the planning defaults (15 m/s at
+  40%, about 3 m/s climb, 8:1 glide, stall at 9 m/s), hand-launches when a plan starts, and can be given wind, a stopped
+  motor or a cut link (`sim_set`, or the Simulation panel on Operate). It flies plans without `NAV_PLANE_MISS`.
+  Entering or leaving it clears home, the position and the flight mode, so a real vehicle never uses anything from it.
+- `tools/sim-flight.mjs` flies it on the phone, in real time: the motor stops 700 m out at 80 m with home beyond
+  gliding reach, and it glides to the field 250 m away and lands there, wings level; then the link is cut 400 m out
+  and it turns for home. `SimFlightTest` flies plans in fast time: launch to landing with photos as counted, a climb
+  too steep for its leg, and motor-off glides.
+- `mission_clear` takes a sent plan off the phone.
+
+**What the simulator found.** Three faults that would have shown up in the air:
+
+1. The GPS guard used the profile's top speed, 3 m/s for a ground vehicle, so every fix of a flying plane looked like
+   a jump: missions and Return Home kept stopping to wait. A plane now allows 2.5 × `PLAN_SPEED` plus the wind.
+2. An armed vehicle with the throttle closed counted as parked, so every fix of a motor-off glide or a landing approach
+   looked like a jump, and a gliding plane lost its way to the zone. An armed plane is never assumed still.
+3. Return Home survived disarming, so the next arming started in it. Disarming now ends it, as it did Mission and Hold.
+
+Gliding also needed tuning: `NAV_GLIDE_PITCH` is now about the glide angle (−7° for 8:1, was −3°, which slowed to a
+stall), and in the last 8 m it turns no more than 10°, so it never meets the ground banked.
+
 Done when a plane plan with a survey, a too-steep climb and a turn near the fence is caught when planning with clear
 fixes; flown in the simulator, it handles a forced altitude miss and a link loss by its rules and goes to the right zone;
 Operate shows the times drifting; and the same file set to rover or boat compiles with that vehicle's behaviour.
+
+**Phase 1 is done in software:** each of those is shown by a test or a run on the phone (`PlanTest`, `SimFlightTest`,
+`tools/sim-flight.mjs`, `tools/gs-check.mjs`). What remains is the hardware gates below.
 
 ### Phase 2: AI, map layers and learning
 

@@ -328,6 +328,7 @@ class MissionEngine(private val clock: () -> Long) {
         legStartMs = now; everyNext.clear(); orbitSwept = 0.0; orbitLast = null; waitKind = null; arrived = false; holdUntil = 0
     }
     @Synchronized fun load(m: Mission) { mission = m; state = State.IDLE; index = 0; arrived = false; lateS = null }
+    @Synchronized fun clear() { mission = null; state = State.IDLE; index = 0; arrived = false; lateS = null }
     @Synchronized fun start() {
         state = State.RUNNING; index = 0; startMs = clock(); legFrom = null; missLogged.clear(); lateS = null; resetLeg(startMs)
     }
@@ -578,6 +579,10 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
     @Synchronized fun paramHistoryJson() = JsonArray(paramHistory.filter { (it["device"] as? JsonPrimitive)?.content == vehicle })
 
     fun touchLink() { linkLastMs = System.currentTimeMillis(); linkLossApplied = false }
+    /** In a simulation, the link can be cut on purpose to see what the vehicle does. */
+    @Volatile private var simLinkCut = false
+    private fun simulating() = rt.controller.currentAdapter is SimulatedPlane
+    private fun linkLost(now: Long) = (simLinkCut && simulating()) || (linkLastMs != 0L && now - linkLastMs > LINK_LOSS_MS)
 
     // --- Readiness: one source of truth for arming, on every screen.
 
@@ -809,6 +814,24 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
                 rt.log.event("mission", source.name, "uploaded", "${m.name}: ${m.items.size} points")
                 CommandResult.OK
             }
+            "sim_set" -> {
+                if (!simulating()) return no("not_permitted", "only for the simulated plane")
+                val s = rt.planeSim
+                a.d("windMps")?.let { if (it !in 0.0..30.0) return no("out_of_range", "wind must be 0 to 30 m/s"); s.windMps = it }
+                a.d("windFromDeg")?.let { s.windFromDeg = ((it % 360) + 360) % 360 }
+                a.b("motorFailed")?.let { s.motorFailed = it; rt.log.event("sim", source.name, "motor", if (it) "simulated motor failure" else "simulated motor running again") }
+                a.b("linkCut")?.let { simLinkCut = it; if (!it) touchLink(); rt.log.event("sim", source.name, "link", if (it) "simulated link cut" else "simulated link back") }
+                if (a.b("reset") == true) { if (mode != Mode.DISARMED) return no("not_permitted", "disarm first"); s.reset(); simLinkCut = false }
+                CommandResult.OK
+            }
+            "mission_clear" -> {
+                if (missions.state == MissionEngine.State.RUNNING || missions.state == MissionEngine.State.PAUSED) return no("not_permitted", "stop the running mission first")
+                missions.clear()
+                forgetPlan()
+                writer.execute { runCatching { missionFile.delete() } }
+                rt.log.event("mission", source.name, "cleared", "mission cleared from the phone")
+                CommandResult.OK
+            }
             "plan_save" -> {
                 val plan = a["plan"] as? JsonObject ?: return no("malformed", "plan is required")
                 val name = (a.s("name") ?: plan.s("name") ?: "").trim().take(60)
@@ -936,7 +959,8 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
             if (!r.ok) return CommandResult.reject("not_permitted", "the plan no longer checks out: ${r.problems.first().let { (it.step?.let { s -> "$s: " } ?: "") + it.text }}")
             if (r.hash != loaded.hash) return CommandResult.reject("not_permitted", "something changed since the plan was checked and sent (home, settings or the vehicle). Check it and send it again")
         }
-        val planeMay = p.vehicleType == "plane" && loaded.hash != null && rt.params.get("NAV_PLANE_MISS") >= 1
+        // A simulated plane needs no permission: nothing real can crash.
+        val planeMay = p.vehicleType == "plane" && loaded.hash != null && (rt.params.get("NAV_PLANE_MISS") >= 1 || simulating())
         if (!p.missionsAllowed && !planeMay) return CommandResult.reject("unsupported",
             if (p.vehicleType == "plane") "a plane flies only checked plans, and only with NAV_PLANE_MISS set to 1. It's experimental and untested in the air"
             else "missions aren't available for this vehicle type")
@@ -1079,7 +1103,7 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
             breachReason = b
         } else if (!armed) breachReason = null
         // A running mission's own link-loss rule applies while the ground station is away.
-        if (armed && missions.state == MissionEngine.State.RUNNING && linkLastMs != 0L && now - linkLastMs > LINK_LOSS_MS && !linkLossApplied) {
+        if (armed && missions.state == MissionEngine.State.RUNNING && linkLost(now) && !linkLossApplied) {
             linkLossApplied = true
             val rule = missions.mission?.onLinkLoss ?: "continue"
             rt.log.event("failsafe", "phone", "link_lost", "Ground link lost during the mission. Rule: $rule")
@@ -1172,7 +1196,7 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
             val left = secondsLeft()
             val need = Navigation.distanceM(pos.lat, pos.lon, h.lat, h.lon) / max(0.1, pf.speed - pf.wind) * 1.1
             if (left < need) {
-                val alone = missions.state == MissionEngine.State.RUNNING || (linkLastMs != 0L && now - linkLastMs > LINK_LOSS_MS)
+                val alone = missions.state == MissionEngine.State.RUNNING || linkLost(now)
                 if (alone) {
                     timeActed = true
                     divert("flight time: about ${left.toInt()} s left, home needs ${need.toInt()} s", pos.lat, pos.lon, Contingency.poweredReachM(left, pf.speed, pf.wind), glide = false)
@@ -1372,6 +1396,10 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         rt.fc.divert?.let { d -> putJsonObject("divert") { put("zone", d.id); put("kind", d.kind); put("glide", d.glide); put("why", d.why); put("lat", d.lat); put("lon", d.lon) } }
         rt.fc.motorOutWhy?.let { put("motorOut", it) }
         if (rt.fc.armedSeconds() > 0) put("timeLeftS", secondsLeft().toInt())
+        if (simulating()) rt.planeSim.let { s -> putJsonObject("sim") {
+            put("windMps", s.windMps); put("windFromDeg", s.windFromDeg); put("motorFailed", s.motorFailed); put("linkCut", simLinkCut)
+            put("airspeed", Math.round(s.airspeed * 10) / 10.0); put("heightM", Math.round(s.h * 10) / 10.0); put("onGround", s.onGround); put("crashed", s.crashed); s.touchdown?.let { put("touchdown", it) }
+        } }
         if (canSeePrivate) missions.mission?.let { put("missionData", Geo.missionJson(it)) }
         if (canSeePrivate) loadedPlan?.let { put("planData", it) }
         put("fence", buildJsonObject { put("set", fence.isSet); put("breach", breachReason); if (canSeePrivate) put("data", Geo.fenceJson(fence)) })

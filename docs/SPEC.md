@@ -112,6 +112,8 @@ New `cmd` values, each answered by the usual `ack`. An `ack` for a command that 
 | `plan_list` | none. `data.plans[]`: `name`, `savedAt`, `steps`. AI may use it |
 | `plan_load` | `name`. `data`: `name`, `plan`. AI may use it |
 | `plan_delete` | `name`. People only |
+| `mission_clear` | none. Takes the loaded mission or sent plan off the phone. Not while one runs. People only |
+| `sim_set` | Only with the Simulated plane: any of `windMps`, `windFromDeg`, `motorFailed`, `linkCut`, and `reset` (disarmed: back to the start). `ops.sim` reports it, with `airspeed`, `heightM`, `onGround`, `crashed` and `touchdown`. People only |
 | `plan_upload` | `plan`. People only. Needs home set: the plan is compiled against the real home, and loaded only if it checks out. The ack's `data` is the same as `plan_check`'s. Replaces any loaded mission; `ops.planData` then holds the file |
 | `mission_start` | optional `hash`. For a sent plan it's compiled again and refused if it no longer checks out or its hash changed (home, settings or vehicle). A plane runs only sent plans, and only with `NAV_PLANE_MISS` 1 |
 | `mission_pause`, `mission_resume`, `mission_skip`, `mission_abort` | none |

@@ -383,6 +383,7 @@ function MapPlan() {
           ))}
           <button onClick={undo} disabled={!undoStack.length}>Undo</button>
           <button onClick={redo} disabled={!redoStack.length}>Redo</button>
+          <button id="newPlan" disabled={!plan.steps.length && !(plan.zones ?? []).length} onClick={() => { edit(() => { draft.plan = emptyPlan(); }); setSel(-1); setChecked(null); }}>New plan</button>
         </div>
         <div class="mapwrap">
           <canvas ref={ref} id="planMap" />
@@ -469,6 +470,8 @@ function MapPlan() {
           {sendMsg && <p id={sendMsg.ok ? 'uploaded' : 'sendProblem'} class={sendMsg.ok ? 'goodText' : 'badText'}>{sendMsg.text}</p>}
           {sentHash ? <HoldButton label="Hold to start" ms={1200} onHeld={() => cmd('mission_start', { hash: onPhone }, { label: 'Start plan' })} />
             : <p class="dim small">{onPhone ? `The phone has plan ${onPhone}. Send this one to start it.` : 'Send it, then hold to start.'}</p>}
+          {S.ops?.mission?.name && S.ops.mission.state !== 'RUNNING' && S.ops.mission.state !== 'PAUSED' &&
+            <button onClick={() => cmd('mission_clear', {}, { label: 'Clear from the phone' })}>Clear what's on the phone</button>}
         </Panel>}
 
         <Panel title="Saved plans" right={<button onClick={listPlans}>{library ? 'Refresh' : 'Show'}</button>}>

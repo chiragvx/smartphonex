@@ -435,7 +435,7 @@ class VehicleController(
     private fun enterMode(m: Mode, why: String) {
         if (m != Mode.FAILSAFE) failsafeReason = null
         clearActivity()
-        if (m == Mode.DISARMED || m == Mode.FAILSAFE) fc?.let { f -> if (f.mode == FlightMode.AUTO || f.mode == FlightMode.HOLD) f.setModeForce(FlightMode.MANUAL) }
+        if (m == Mode.DISARMED || m == Mode.FAILSAFE) fc?.let { f -> if (f.mode == FlightMode.AUTO || f.mode == FlightMode.HOLD || f.mode == FlightMode.RETURN_HOME) f.setModeForce(FlightMode.MANUAL) }
         if (mode != m) log.event("mode", "controller", m.name, "${mode.name} -> ${m.name}: $why")
         mode = m
     }

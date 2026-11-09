@@ -102,6 +102,8 @@ class VehicleRuntime(val dir: File) {
     val params = ParamStore(File(dir, "params.json")) { profiles.activeId }
     val fc = FlightController(params, log, { profiles.active.vehicleType }).also { it.maxSpeedMps = { profiles.active.maxSpeedMps } }
     val flightLog = FlightLog(File(dir, "logs"))
+    /** A plane flown by the real autopilot on simulated sensors. */
+    val planeSim = SimulatedPlane(fc)
     private lateinit var opsHolder: Ops
     val ops: Ops get() = opsHolder
     /** How many ground station connections are open right now. */
@@ -123,6 +125,7 @@ class VehicleRuntime(val dir: File) {
     val controller = VehicleController(preview, profiles, log, adapterFor = { kind ->
         when (kind) {
             "simulator" -> simulator
+            "simulator-plane" -> planeSim.also { it.reset() }
             "preview" -> preview
             "device" -> engine.also {
                 val d = devices.get(profiles.activeId.removePrefix("device:"))
@@ -151,6 +154,7 @@ class VehicleRuntime(val dir: File) {
     init {
         opsHolder = Ops(this, rootDir)
         fc.missions = opsHolder.missions
+        fc.simulation = { controller.currentAdapter === planeSim }
         engine.trimFor = { opsHolder.trims.get(it) }
         engine.overrideFor = { opsHolder.overrideFor(it) }
         fc.groundRuns = { opsHolder.groundRuns.get(profiles.activeId) }

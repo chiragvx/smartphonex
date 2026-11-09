@@ -93,8 +93,14 @@ class FlightController(
     private var home: GpsFix? = null
     /** The vehicle's top speed, for telling a real move from a GPS jump. Set by the runtime from the active profile. */
     @Volatile var maxSpeedMps: () -> Double = { 5.0 }
-    /** Every fix passes through this before navigation sees it. */
-    val gpsGuard = GpsGuard({ p("ARM_GPS_ACC") }, { p("GPS_TIMEOUT_S") }, { maxSpeedMps() })
+    /**
+     * Every fix passes through this before navigation sees it. A profile's top speed is a ground vehicle's (it's also
+     * the AI's speed limit), so a plane uses its planned speed with room for a dive and a tailwind: without that,
+     * every fix in flight looked like a jump.
+     */
+    val gpsGuard = GpsGuard({ p("ARM_GPS_ACC") }, { p("GPS_TIMEOUT_S") }, {
+        if (vehicleType() == "plane") maxOf(maxSpeedMps(), 2.5 * p("PLAN_SPEED") + p("PLAN_WIND")) else maxSpeedMps()
+    })
     private var lastRejectLogMs = 0L
     private var navWaitSince = 0L
     private var lastNavHealth: GpsGuard.Health? = null
@@ -146,9 +152,31 @@ class FlightController(
         fun roll(elapsedMs: Long) { hz = count * 1000.0 / elapsedMs; count = 0 }
     }
 
+    // --- Simulation: a simulated vehicle's sensors replace the phone's, which are ignored while it's selected.
+
+    /** True while a simulated vehicle is flying: set by the runtime. */
+    @Volatile var simulation: () -> Boolean = { false }
+    private var simFeeding = false
+    private var wasSimulating = false
+    private fun ignored() = !simFeeding && simulation()
+
+    /** The simulator's readings, fed through the same inputs as the phone's, so everything downstream is the same. */
+    fun simFeed(block: () -> Unit) = synchronized(lock) { simFeeding = true; try { block() } finally { simFeeding = false } }
+
+    /** The simulator's true attitude and body rates (rad/s), in place of the estimator, with the sensors counted as fresh. */
+    fun simAttitude(a: Attitude, gyroRad: DoubleArray) = synchronized(lock) {
+        val now = nowMs()
+        lastGyroWallMs = now; lastAccelWallMs = now; lastMagWallMs = now
+        gyroRate.tick(); accelRate.tick(); magRate.tick()
+        accelNorm = 9.80665; magNorm = 45.0
+        gyroBody = gyroRad
+        attitude = a
+    }
+
     // --- Sensor inputs: called from the sensor thread at whatever rate this phone manages.
 
     fun onGyro(tNs: Long, x: Float, y: Float, z: Float) = synchronized(lock) {
+        if (ignored()) return@synchronized
         val now = nowMs()
         val dt = if (lastGyroNs == 0L) 0.0 else ((tNs - lastGyroNs) / 1e9).coerceIn(0.0, 0.1)
         lastGyroNs = tNs
@@ -167,6 +195,7 @@ class FlightController(
     }
 
     fun onAccel(x: Float, y: Float, z: Float) = synchronized(lock) {
+        if (ignored()) return@synchronized
         lastAccelWallMs = nowMs()
         accelRate.tick()
         val n = sqrt((x * x + y * y + z * z).toDouble())
@@ -177,6 +206,7 @@ class FlightController(
     }
 
     fun onMag(x: Float, y: Float, z: Float) = synchronized(lock) {
+        if (ignored()) return@synchronized
         lastMagWallMs = nowMs()
         magRate.tick()
         magNorm = sqrt((x * x + y * y + z * z).toDouble())
@@ -185,23 +215,26 @@ class FlightController(
     }
 
     fun onRotationVector(x: Float, y: Float, z: Float, w: Float) = synchronized(lock) {
+        if (ignored()) return@synchronized
         lastRefWallMs = nowMs()
         reference = Frames.fromRotationVector(x.toDouble(), y.toDouble(), z.toDouble(), w.toDouble(), mount)
     }
 
-    fun onBaro(hPa: Float) = synchronized(lock) { lastBaroWallMs = nowMs(); pressureHpa = hPa.toDouble() }
+    fun onBaro(hPa: Float) = synchronized(lock) { if (ignored()) return@synchronized; lastBaroWallMs = nowMs(); pressureHpa = hPa.toDouble() }
 
     /**
      * A new position. [fromSatellites] is false for Android's network position (Wi-Fi and cell towers): it's shown,
      * but never steers anything, because it can be hundreds of metres out while claiming far better.
      */
     fun onGps(fix: GpsFix, declination: Double?, fromSatellites: Boolean = true) = synchronized(lock) {
+        if (ignored()) return@synchronized
         gps = fix
         gpsRate.tick()
         if (declination != null) declinationDeg = declination
         if (!fromSatellites) return@synchronized
         // Only an armed vehicle that isn't being driven is surely still. Disarmed, it may be carried, as in a walk test.
-        val moving = !lastArmed || kotlin.math.abs(lastOutput.throttle) > 0.05
+        // An armed plane never is: with the throttle closed it's gliding or coming in to land, at full flying speed.
+        val moving = !lastArmed || isPlane() || kotlin.math.abs(lastOutput.throttle) > 0.05
         when (val v = gpsGuard.feed(fix, moving)) {
             is GpsGuard.Verdict.Reset -> log.event("gps", "phone", "jump", "${v.reason}: navigation waits until it settles")
             is GpsGuard.Verdict.Rejected -> if (fix.atMs - lastRejectLogMs > 5000) { lastRejectLogMs = fix.atMs; log.event("gps", "phone", "rejected", "GPS fix ignored: ${v.reason}") }
@@ -252,6 +285,7 @@ class FlightController(
      * strong peak in the sound, background included, so background that's still humming stays remembered.
      */
     fun onPropTone(tone: PropTone.Tone?, outputsAtRest: Boolean = true, heard: List<Double> = tone?.peaks ?: emptyList()) = synchronized(lock) {
+        if (ignored()) return@synchronized
         val now = nowMs()
         val hz = propTracker.update(tone, now)
         if (hz != null) propRecent.addLast(now to hz)
@@ -631,6 +665,16 @@ class FlightController(
         if (!armed) landing = false
         if (armed && !lastArmed) { armedAtMs = now; propBackground.removeAll { now - it.atMs > PROP_BACKGROUND_MS } }
         lastArmed = armed
+        // Into or out of a simulation, nothing it knew about where it is holds: home, the position and any diversion
+        // belong to one world only. A real vehicle must never navigate to a home set in a simulation.
+        val sim = simulation()
+        if (sim != wasSimulating) {
+            wasSimulating = sim
+            home = null; homeBaroM = null; gps = null; divert = null; landing = false
+            gpsGuard.reset()
+            enterMode(FlightMode.MANUAL, if (sim) "simulation started" else "simulation ended")
+            log.event("fc", "phone", "simulation", if (sim) "Simulation: the phone's sensors are set aside" else "Simulation over: home and position cleared, back to the phone's own sensors")
+        }
         monitor(now, armed)
         updateFlying(now)
         watchMotor(now)
@@ -866,8 +910,15 @@ class FlightController(
         val glide = d?.glide == true && isPlane()
         val tLat = d?.lat ?: home?.lat
         val tLon = d?.lon ?: home?.lon
-        // No trustworthy position: stop (a plane circles) rather than drive on a guess. Gliding, it goes wings level.
-        if (g == null || tLat == null || tLon == null) return if (glide) planeControl(input, 0.0, p("NAV_GLIDE_PITCH"), 0.0, dt) else holdHere(input, dt)
+        // Gliding, the last few metres are flown nearly wings level, still turning gently towards the zone, so it never
+        // meets the ground banked. A glide with no trustworthy position goes wings level. Otherwise, with no position:
+        // stop (a plane circles) rather than drive on a guess.
+        if (glide && g == null) return planeControl(input, 0.0, p("NAV_GLIDE_PITCH"), 0.0, dt)
+        if (glide && g != null && tLat != null && tLon != null && (heightAboveHome() ?: Double.MAX_VALUE) < GLIDE_LEVEL_M) {
+            val err = Frames.wrap180(Navigation.bearingDeg(g.lat, g.lon, tLat, tLon) - attitude.yaw)
+            return planeControl(input, (p("HDG_P") * err).coerceIn(-GLIDE_LEVEL_BANK, GLIDE_LEVEL_BANK), p("NAV_GLIDE_PITCH"), 0.0, dt)
+        }
+        if (g == null || tLat == null || tLon == null) return holdHere(input, dt)
         val dist = Navigation.distanceM(g.lat, g.lon, tLat, tLon)
         if (dist < maxOf(p("RTH_RADIUS"), d?.radiusM ?: 0.0)) {
             if (!arrivedHome) { arrivedHome = true; log.event("fc", "phone", "home", if (d == null || d.id == "home") "arrived home" else "arrived at ${d.kind} zone ${d.id}") }
@@ -1172,6 +1223,9 @@ class FlightController(
         private const val SENSOR_STALE_MS = 500L
         private const val GYRO_STOPPED = "gyroscope stopped"
         private const val MOTOR_OUT_MS = 1_500L
+        /** Gliding down over a zone, wings level below this height above home. */
+        private const val GLIDE_LEVEL_M = 8.0
+        private const val GLIDE_LEVEL_BANK = 10.0
         private const val GPS_STALE_MS = 5000L
         private const val GPS_LOST_MS = 10000L
         private const val STALL_MS = 50.0

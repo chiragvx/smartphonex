@@ -238,6 +238,8 @@ await sleep(500);
 // Measured each time: once checked, the profile and timeline appear under the map and it shrinks.
 const clickMap = async (fx, fy) => { const m = await rect('#planMap'); const x = m.x + m.w * fx, y = m.y + m.h * fy; await mouse('mousePressed', x, y); await mouse('mouseReleased', x, y); await sleep(150); };
 const steps = () => js(`document.querySelectorAll('#steps .item').length`);
+// Zoomed in to a field's scale, whether or not the phone has a position to centre on yet.
+{ const m = await rect('#planMap'); for (let i = 0; i < 16; i++) { await cdp('Input.dispatchMouseEvent', { type: 'mouseWheel', x: m.x + m.w / 2, y: m.y + m.h / 2, deltaX: 0, deltaY: -100 }); await sleep(20); } }
 await js(`document.querySelector('[data-tool=goto]').click()`);
 const before2 = await steps();
 for (let i = 0; i < 4; i++) await clickMap(0.3 + i * 0.1, 0.3);
@@ -362,6 +364,9 @@ await until(async () => (await arm()) === 'Disarmed');
 await selectDevice('plane');
 await page('plan');
 await sleep(500);
+await js(`document.querySelector('#newPlan')?.click()`);
+await sleep(200);
+check('New plan starts empty', (await js(`document.querySelectorAll('#steps .item').length`)) === 0);
 check('A plane can take off', await clickButton('+ Take off'));
 await js(`document.querySelector('[data-tool=land]').click()`);
 await clickMap(0.2, 0.3);
@@ -411,6 +416,17 @@ const planGone = await js(`new Promise(res => {
   setTimeout(() => res(false), 4000);
 })`);
 check('Test plan cleaned up', planGone === true);
+// A plan sent during the check comes off the phone again.
+const missionGone = await js(`new Promise(res => {
+  const w = new WebSocket('ws://${host}/ws?token=${token}');
+  w.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'hello') w.send(JSON.stringify({ type: 'cmd', seq: Date.now() * 1000 + 2, sentAt: Date.now() + (m.t - Date.now()), cmd: 'mission_clear' }));
+    if (m.type === 'ack') { w.close(); res(m.accepted); }
+  };
+  setTimeout(() => res(false), 4000);
+})`);
+check('Sent plan cleared', missionGone === true);
 
 check('No script errors or blocked requests', problems.length === 0, problems.slice(0, 5).join(' || '));
 console.log(`\n${failed ? `${failed} FAILED` : 'ALL PASSED'} (started on ${startProfile})`);

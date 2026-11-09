@@ -139,6 +139,15 @@ object Presets {
                 Channel("Elevator", pitch = 1.0),
                 Channel("Rudder", yaw = 1.0),
             )),
+        // Flown by the real autopilot on simulated sensors: plans, miss rules and contingencies without hardware.
+        VehicleProfile("plane-sim", "Simulated plane", vehicleType = "plane", adapter = "simulator-plane", maxThrottle = 1.0,
+            aiMayArm = false, missionsAllowed = false,
+            channels = listOf(
+                Channel("Motor", ChannelKind.MOTOR_FORWARD, throttle = 1.0),
+                Channel("Aileron", roll = 1.0),
+                Channel("Elevator", pitch = 1.0),
+                Channel("Rudder", yaw = 1.0),
+            )),
         VehicleProfile("wing", "Flying wing (elevons)", vehicleType = "plane", adapter = "preview", maxThrottle = 1.0,
             aiMayArm = false, missionsAllowed = false,
             channels = listOf(

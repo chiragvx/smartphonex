@@ -172,7 +172,13 @@ function Run({ name, frames, photos, onClose }: { name: string; frames: number; 
   }, [times, cursor]);
   if (err) return <Panel title={name}><p class="badText">{err}</p><button onClick={onClose}>Back</button></Panel>;
   if (!rows) return <p class="dim">Loading {name}...</p>;
-  const inRun = events.filter(e => typeof e.t === 'number' && e.t >= t0 && e.t <= t1 && ['mode', 'failsafe', 'trigger', 'mission', 'photo', 'fence', 'marker'].includes(e.kind));
+  const inRun = events.filter(e => typeof e.t === 'number' && e.t >= t0 && e.t <= t1 && ['mode', 'failsafe', 'trigger', 'mission', 'photo', 'fence', 'marker', 'nav', 'sim'].includes(e.kind));
+  // A sent plan logs each point against its expected time: "reached point 4 (step field), 12 s late".
+  const arrivals = inRun.filter(e => e.kind === 'mission' && e.code === 'arrived').map(e => {
+    const m = /reached point (\d+)(?: \(step ([^)]+)\))?(?:, (?:(on time)|(\d+) s (late|early)))?/.exec(String(e.message));
+    return m && { t: e.t as number, point: Number(m[1]), step: m[2] ?? '', late: m[3] ? 0 : m[4] ? Number(m[4]) * (m[5] === 'early' ? -1 : 1) : null };
+  }).filter(Boolean) as { t: number; point: number; step: string; late: number | null }[];
+  const misses = inRun.filter(e => (e.kind === 'mission' && (e.code === 'miss' || e.code === 'aborted')) || (e.kind === 'failsafe' && ['divert', 'motor_out', 'outer', 'time_low', 'link_lost', 'no_zone'].includes(String(e.code))));
   const here = rows.find(r => (r.t as number) >= cursor);
   const runPhotos = photos.filter(p => p.t >= t0 && p.t <= t1);
   return (
@@ -199,6 +205,19 @@ function Run({ name, frames, photos, onClose }: { name: string; frames: number; 
           <Chart title="Altitude" unit="m" rows={rows} cursor={cursor} setCursor={setCursor} series={[{ key: 'alt', label: 'GPS', color: BLUE }]} />
         </div>
       </div>
+      {arrivals.some(a => a.late !== null) && <Panel title="Plan against actual">
+        <p class="dim small">How far ahead of or behind the plan's expected time it reached each point. Steadily later means the planning numbers are too hopeful for this vehicle: lower PLAN_SPEED or PLAN_CLIMB.</p>
+        <div class="list" id="planVsActual">
+          {arrivals.map((a, i) => (
+            <div key={i} class="item click" onClick={() => setCursor(a.t)}>
+              <span class="mono dim">{((a.t - t0) / 1000).toFixed(0)} s</span>
+              <span class="grow">point {a.point}{a.step && <span class="dim"> · {a.step}</span>}</span>
+              {a.late !== null && <span class={Math.abs(a.late) < 10 ? 'goodText' : a.late > 0 ? 'warnText' : ''}>{a.late === 0 ? 'on time' : a.late > 0 ? `${a.late} s late` : `${-a.late} s early`}</span>}
+            </div>
+          ))}
+        </div>
+        {misses.length > 0 && <><h3>What didn't go to plan</h3><ul class="warnings">{misses.map((e, i) => <li key={i} class="click" onClick={() => setCursor(e.t)}>{String(e.message)}</li>)}</ul></>}
+      </Panel>}
       <Panel title="Events">
         <div class="list" id="runEvents">
           {inRun.map((e, i) => <div key={i} class={`item ${Math.abs(e.t - cursor) < 500 ? 'sel' : ''}`} onClick={() => setCursor(e.t)}><span class="mono dim">{((e.t - t0) / 1000).toFixed(1)} s</span><span class="grow">{e.message}</span></div>)}

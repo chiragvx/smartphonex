@@ -27,6 +27,17 @@ function MapView({ goHere }: { goHere: boolean }) {
       }
       const running = ops?.mission.state === 'RUNNING' || ops?.mission.state === 'PAUSED';
       drawPlan(mm, g, ops?.missionData?.items ?? [], running ? ops!.mission.index : -1, ops?.fence.data ?? null);
+      // Safe zones of the sent plan, and where it's going if it's diverting.
+      for (const z of (ops?.planData?.zones ?? []) as { kind: string; at: [number, number]; radius?: number }[]) {
+        const s = mm.toScreen(z.at[0], z.at[1]);
+        g.beginPath(); g.arc(s.x, s.y, Math.max(6, (z.radius ?? 20) / mm.metersPerPixel()), 0, 7);
+        g.lineWidth = 2; g.strokeStyle = z.kind === 'ditch' ? '#fb923c' : '#4ade80'; g.stroke();
+      }
+      const d = ops?.divert;
+      if (d) {
+        const s = mm.toScreen(d.lat, d.lon);
+        g.beginPath(); g.arc(s.x, s.y, 16, 0, 7); g.lineWidth = 3; g.strokeStyle = '#e5a823'; g.setLineDash([5, 4]); g.stroke(); g.setLineDash([]);
+      }
       const home = S.fcs?.home;
       if (home) drawHome(mm, g, home.lat, home.lon);
       const gps = S.fcs?.gps;
@@ -119,18 +130,61 @@ function ModePanel() {
   );
 }
 
+const mmss = (s: number) => { const t = Math.max(0, Math.round(s)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; };
+
 function MissionPanel() {
   const m = S.ops?.mission;
   if (!m?.name) return null;
   const canRun = isOperator();
+  const items = S.ops?.missionData?.items ?? [];
+  const planned = items.length ? (items[items.length - 1] as any).expectAt as number | undefined : undefined;
+  const late = m.lateS;
   return (
-    <Panel title={`Mission: ${m.name}`}>
-      <p id="missionState">{m.state.toLowerCase()}, point {Math.min(m.index + 1, m.total)} of {m.total}{m.dist != null && `, ${m.dist.toFixed(0)} m to go`}</p>
+    <Panel title={`${m.hash ? 'Plan' : 'Mission'}: ${m.name}`}>
+      <p id="missionState">{m.state.toLowerCase()}, point {Math.min(m.index + 1, m.total)} of {m.total}{m.step && ` (${m.step})`}{m.dist != null && `, ${m.dist.toFixed(0)} m to go`}</p>
+      {m.hash && (m.state === 'RUNNING' || m.state === 'PAUSED') && <p id="planTiming" class="dim">
+        T+{mmss(m.elapsedS ?? 0)}{planned !== undefined && ` of about ${mmss(planned + (late ?? 0))}`}
+        {late !== undefined && <>{' · '}<span class={Math.abs(late) < 10 ? 'goodText' : late > 0 ? 'warnText' : ''}>{Math.abs(late) < 2 ? 'on time' : late > 0 ? `${Math.round(late)} s late` : `${Math.round(-late)} s early`}</span></>}
+      </p>}
       {canRun && <div class="row">
         {m.state === 'RUNNING' && <><button onClick={() => cmd('mission_pause', {}, { label: 'Pause' })}>Pause</button><button onClick={() => cmd('mission_skip', {}, { label: 'Skip' })}>Skip</button><button onClick={() => cmd('mission_abort', {}, { label: 'Abort' })}>Abort</button></>}
         {m.state === 'PAUSED' && <><button onClick={() => cmd('mission_resume', {}, { label: 'Resume' })}>Resume</button><button onClick={() => cmd('mission_abort', {}, { label: 'Abort' })}>Abort</button></>}
-        {m.state !== 'RUNNING' && m.state !== 'PAUSED' && <HoldButton id="missionStart" label="Hold to start" ms={1200} onHeld={() => cmd('mission_start', {}, { label: 'Start mission' })} />}
+        {m.state !== 'RUNNING' && m.state !== 'PAUSED' && <HoldButton id="missionStart" label="Hold to start" ms={1200} onHeld={() => cmd('mission_start', m.hash ? { hash: m.hash } : {}, { label: 'Start mission' })} />}
       </div>}
+    </Panel>
+  );
+}
+
+/** What the phone is doing about trouble: flight time, a stopped motor, going somewhere other than home. */
+function SafetyPanel() {
+  const o = S.ops;
+  if (!o || (o.timeLeftS === undefined && !o.divert && !o.motorOut)) return null;
+  return (
+    <Panel title="Safety">
+      {o.timeLeftS !== undefined && <p id="timeLeft" class={o.timeLeftS < 60 ? 'badText' : o.timeLeftS < 180 ? 'warnText' : 'dim'}>Flight time left about {mmss(o.timeLeftS)}, keeping the reserve (by time armed)</p>}
+      {o.motorOut && <p class="badText" id="motorOut">Motor stopped: {o.motorOut}</p>}
+      {o.divert && <p class="warnText" id="divert">{o.divert.glide ? 'Gliding' : 'Going'} to {o.divert.zone === 'home' ? 'home' : `${o.divert.kind} zone ${o.divert.zone}`}: {o.divert.why}</p>}
+    </Panel>
+  );
+}
+
+/** The simulated plane: wind, and trouble on purpose. */
+function SimPanel() {
+  const s = S.ops?.sim;
+  if (!s || !isOperator()) return null;
+  const set = (args: Record<string, unknown>, label: string) => cmd('sim_set', args, { label });
+  return (
+    <Panel title="Simulation">
+      <p class="dim small">{s.onGround ? (s.crashed ? 'Crashed on landing.' : 'On the ground. Starting a plan launches it by hand.') : `Flying at ${s.airspeed} m/s, ${s.heightM} m up.`}</p>
+      <div class="grid2">
+        <label>Wind, m/s <input type="number" min="0" max="30" value={s.windMps} onChange={e => set({ windMps: Number(e.currentTarget.value) }, 'Wind')} /></label>
+        <label>From, ° <input type="number" value={s.windFromDeg} onChange={e => set({ windFromDeg: Number(e.currentTarget.value) }, 'Wind')} /></label>
+      </div>
+      <div class="row">
+        <button id="simMotor" class={s.motorFailed ? 'sel' : ''} onClick={() => set({ motorFailed: !s.motorFailed }, s.motorFailed ? 'Motor back' : 'Fail the motor')}>{s.motorFailed ? 'Motor failed' : 'Fail the motor'}</button>
+        <button id="simLink" class={s.linkCut ? 'sel' : ''} onClick={() => set({ linkCut: !s.linkCut }, s.linkCut ? 'Link back' : 'Cut the link')}>{s.linkCut ? 'Link cut' : 'Cut the link'}</button>
+        <button onClick={() => set({ reset: true }, 'Back to the start')} disabled={armed()}>Back to the start</button>
+      </div>
     </Panel>
   );
 }
@@ -301,6 +355,8 @@ export function Operate() {
         <ArmPanel />
         <ModePanel />
         <MissionPanel />
+        <SafetyPanel />
+        <SimPanel />
         <TriggersPanel />
         <FacePanel />
         <SkillsPanel />

@@ -552,6 +552,18 @@ class OpsRuntimeTest {
         tick(2)
     }
 
+    @Test fun aSentPlanCanBeClearedAndStaysCleared() {
+        gps()
+        assertNull(rt.fc.setHomeHere())
+        assertTrue(ops("plan_upload") { put("plan", roverPlan(60.0)) }.accepted)
+        assertFalse("a person clears it", ops("mission_clear", Source.AI).accepted)
+        assertTrue(ops("mission_clear").accepted)
+        assertNull(rt.ops.missions.mission)
+        assertFalse(rt.ops.opsJson(true).containsKey("planData"))
+        rt.ops.flush()
+        assertNull("after a restart too", Ops(rt, dir).missions.mission)
+    }
+
     @Test fun plansAreKeptOnThePhoneByName() {
         assertEquals("no name anywhere", "malformed", ops("plan_save") { put("plan", JsonObject(roverPlan(60.0) - "name")) }.code)
         assertTrue(ops("plan_save") { put("name", "Yard loop"); put("plan", roverPlan(60.0)) }.accepted)
