@@ -8,6 +8,7 @@
     "dev": "vite"
   },
   "dependencies": {
+    "maplibre-gl": "6.16.0",
     "preact": "10.25.4"
   },
   "devDependencies": {

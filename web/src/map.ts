@@ -8,6 +8,10 @@ const SOURCES: Record<Layer, { url: (z: number, x: number, y: number) => string;
   street: { url: (z, x, y) => `https://tile.openstreetmap.org/${z}/${x}/${y}.png`, credit: '© OpenStreetMap contributors', maxZ: 19 },
 };
 
+/** Where to ask for a tile instead of its source: set when the phone can serve them. Null asks the source. */
+let tileVia: ((layer: Layer, z: number, x: number, y: number) => string | null) | null = null;
+export const setTileVia = (f: typeof tileVia) => { tileVia = f; };
+
 const project = (lat: number, lon: number, z: number) => {
   const s = Math.sin(lat * Math.PI / 180);
   const n = TILE * 2 ** z;
@@ -65,6 +69,8 @@ export class TileMap {
     return unproject(m.x + x - this.w / 2, m.y + y - this.h / 2, this.zoom);
   }
   private get w() { return this.c.clientWidth; }
+  get width() { return this.w; }
+  get height() { return this.h; }
   private get h() { return this.c.clientHeight; }
   metersPerPixel() { return 156543.03 * Math.cos(this.center.lat * Math.PI / 180) / 2 ** this.zoom; }
 
@@ -131,12 +137,17 @@ export class TileMap {
     let t = this.tiles.get(key);
     if (!t) {
       if (this.tiles.size > 400) this.tiles.clear();
-      t = new Image();
+      const img = new Image();
+      t = img;
       // The relay's page hides its address from others, but OSM's terms need a referrer on requests.
-      t.referrerPolicy = 'strict-origin-when-cross-origin';
-      t.onload = () => this.draw();
-      t.src = SOURCES[this.layer].url(z, x, y);
-      this.tiles.set(key, t);
+      img.referrerPolicy = 'strict-origin-when-cross-origin';
+      img.onload = () => this.draw();
+      const direct = SOURCES[this.layer].url(z, x, y);
+      // Through the phone when connected to it directly: it keeps each tile, so the map works in the field offline.
+      const via = tileVia?.(this.layer, z, x, y);
+      if (via) img.onerror = () => { img.onerror = null; img.src = direct; };
+      img.src = via ?? direct;
+      this.tiles.set(key, img);
     }
     return t.complete && t.naturalWidth ? t : null;
   }

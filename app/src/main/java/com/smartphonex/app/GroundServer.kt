@@ -49,6 +49,7 @@ class GroundServer(
                 get("/review/frame/{run}/{t}") { reviewFrame(call) }
                 get("/favicon.ico") { call.respond(HttpStatusCode.NoContent) }
                 get("/export/{name}") { export(call) }
+                get("/tile/{layer}/{z}/{x}/{y}") { tile(call) }
                 get("/api/tools") { apiList(call) }
                 post("/api/tools/{name}") { apiCall(call) }
                 get("/export/pack/{id}") { exportPack(call) }
@@ -109,6 +110,17 @@ class GroundServer(
         if (!authorized(call.request.queryParameters["token"])) return call.respond(HttpStatusCode.Unauthorized)
         val b = rt.ops.readFrame(call.parameters["run"] ?: "", call.parameters["t"]?.toLongOrNull() ?: 0) ?: return call.respond(HttpStatusCode.NotFound)
         call.respondBytes(b, ContentType.Image.JPEG)
+    }
+
+    /** A map tile, kept on the phone so the map works in the field without internet. See TileCache. */
+    private suspend fun tile(call: ApplicationCall) {
+        if (!authorized(call.request.queryParameters["token"])) return call.respond(HttpStatusCode.Unauthorized)
+        val p = call.parameters
+        val z = p["z"]?.toIntOrNull(); val x = p["x"]?.toIntOrNull(); val y = p["y"]?.removeSuffix(".png")?.toIntOrNull()
+        if (z == null || x == null || y == null) return call.respond(HttpStatusCode.NotFound)
+        val b = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { rt.tiles.get(p["layer"] ?: "", z, x, y) } ?: return call.respond(HttpStatusCode.NotFound)
+        call.response.headers.append(HttpHeaders.CacheControl, "max-age=86400")
+        call.respondBytes(b, if (b.size > 3 && b[1] == 'P'.code.toByte()) ContentType.Image.PNG else ContentType.Image.JPEG)
     }
 
     private suspend fun export(call: ApplicationCall) {

@@ -145,3 +145,11 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 8px; }
   .who { display: none; }
   main { padding: 6px; }
 }
+.advisories { border: 1px solid #a16207; background: rgba(234,179,8,.08); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
+.advisories ul { margin: 4px 0; padding-left: 18px; } .advisories li { margin: 3px 0; cursor: pointer; }
+.adv-red { color: #fca5a5; } .adv-yellow { color: #fde68a; } .adv-nogo { color: #d1d5db; }
+.view3d { position: absolute; inset: 0; z-index: 4; background: #20262e; }
+.view3dMap { position: absolute; inset: 0; }
+.view3dBar { position: absolute; left: 8px; top: 8px; display: flex; gap: 8px; align-items: center; background: rgba(0,0,0,.65); padding: 4px 8px; border-radius: 6px; z-index: 5; }
+.view3dBar label { margin: 0; }
+.view3dNote { position: absolute; left: 8px; bottom: 8px; background: rgba(0,0,0,.6); padding: 3px 8px; border-radius: 6px; z-index: 5; max-width: calc(100% - 16px); }

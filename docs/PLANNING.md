@@ -264,18 +264,23 @@ Operate shows the times drifting; and the same file set to rover or boat compile
 
 ### Phase 2: AI, map layers and learning
 
-- AI tools: check, read the timeline, draft and diff plans. Geometry tools (buffer, shape round a point, clip), place
-  lookup and map features, and anchors clicked on the map, so the AI never invents coordinates. Loosening a restriction
-  is always highlighted. The AI never sends or starts a plan.
-- MapLibre with a 3D route view and offline areas. Terrain is an optional layer.
-- Advisory layers as region packs with source and date: India airspace (airport bands computed from open data, plus
-  imported zones), and no-go areas for land and water from OpenStreetMap. Notices, a disclaimer and logged
-  acknowledgements, as in rule 3.
-- Learning: logged misses suggest corrections to `PLAN_CLIMB`, `PLAN_SPEED` and `PLAN_GLIDE`, which a person approves.
-- QGroundControl `.plan` import and export.
+**Built.** Each part is tested, and run on the phone where a phone can show it.
+
+| Part | What | Shown by |
+|---|---|---|
+| AI planning | MCP tools, so the built-in assistant and any outside AI get them under the same rules: `plan_get_draft` (what the person last checked), `plan_get_anchors` (points they marked with the Anchor tool), `plan_check`, `plan_propose`, `plan_saved`, `plan_learning`; exact geometry (`geo_shape`, `geo_offset`, `geo_buffer`, `geo_measure`); and OpenStreetMap lookups (`place_lookup` by name, `place_features` for fields, water, parks, buildings and roads near a point). The AI never invents coordinates, never sends or starts a plan, and can't save layers, set anchors or apply learned settings. A proposal appears on the Plan screen beside the person's plan, dashed in purple, with what it changes; anything that loosens a restriction (a bigger fence, a removed keep-out or zone, beyond line of sight off, link loss no longer home) is listed in red and asked about again | `PlanToolsTest`, browser check |
+| Learning | While flying plans, the phone measures climb rate (8 s windows climbing towards a point's height), legs against their planned time, and motor-off glides. With three climbs or legs, or one glide, it suggests `PLAN_CLIMB` (90% of the typical climb), `PLAN_SPEED` and `PLAN_GLIDE` (85% of the glide), when they differ by more than 10%. A person applies each; it goes into the settings history | `PlanLearningTest`; the simulator flights measured 2.4 m/s and 8.1:1 and suggested 2.1 and 6.9 |
+| QGroundControl | `plan_export_qgc` writes the compiled route as MAVLink commands (takeoff, waypoints, loiter time and turns, landing, camera distance triggers, speed changes, return), the fence and the safe zones as rally points, with the plan file inside so a round trip loses nothing. `plan_import_qgc` turns a QGroundControl mission into steps, including surveys and corridor scans, and lists what it couldn't carry over. On the Plan screen: Open file, and For QGroundControl | `QgcPlanTest` |
+| Advisory layers | Built in: India's 153 operational airports (OurAirports, public domain) with their 8 and 12 km bands, computed from each airport's reference point with an allowance for its perimeter, and the 60 m and 120 m height limits. Imported: red, yellow and no-go zones from GeoJSON or KML (for example traced from Digital Sky), and no-go areas from OpenStreetMap for the view (military land, reserves, prisons, airfields, ports), each kept with its source and date. Every plan check lists the notices that apply, with the disclaimer. They never block: sending asks for the disclaimer once, then each notice to be acknowledged, and the phone logs each acknowledgement with its notice and source. Nothing says a plan is compliant | `OpsTest`, the simulator flights near Pune International |
+| Map | Tiles go through the phone (`/tile/...`), which keeps every tile looked at for 30 days and serves it however old when offline, within 200 MB, and never puts them in a backup. There's no bulk download of areas: the tile providers' terms don't allow it. A 3D view (MapLibre GL 6.16, loaded only when opened) shows the route as a curtain from the ground to its height, red where no safe zone is in reach, over satellite imagery and optional terrain (AWS Terrarium) | `TileCacheTest`, browser check |
 
 Out of scope: water depth, terrain following, a 3D globe, collision rules for boats, termination switched on, and
 vehicles changing their own plan beyond the miss rules.
+
+What the advisory layers can't do: the airport bands are approximate (a reference point and an allowance, not the
+real perimeter), red zones exist only if someone imports them, OpenStreetMap is incomplete, and nothing here is
+official. Heights in 3D are above home; with terrain on they're drawn above the ground beneath, which over hills isn't
+the same.
 
 ## Untested with real hardware
 

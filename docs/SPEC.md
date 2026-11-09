@@ -112,9 +112,18 @@ New `cmd` values, each answered by the usual `ack`. An `ack` for a command that 
 | `plan_list` | none. `data.plans[]`: `name`, `savedAt`, `steps`. AI may use it |
 | `plan_load` | `name`. `data`: `name`, `plan`. AI may use it |
 | `plan_delete` | `name`. People only |
+| `plan_propose` | `plan`, optional `fence` and `note`. Puts it in `ops.planProposal` for a person to use or dismiss. AI may use it |
+| `plan_proposal_clear` | none. People only |
+| `plan_anchors_set` | `anchors[]` of `name`, `lat`, `lon`, at most 26: points for the AI, in `ops.planAnchors`. People only |
+| `plan_export_qgc`, `plan_import_qgc` | `plan`, or `qgc` (a QGroundControl `.plan`). `data.qgc`, or `data.plan`, `data.fence` and `data.notes`. AI may use them |
+| `plan_learning` | none. `data.measured` and `data.suggestions[]` (`param`, `current`, `suggested`, `basis`). AI may read it |
+| `plan_learning_apply` | `param`: applies its current suggestion. People only. `plan_learning_forget` clears the measurements |
+| `layer_save`, `layer_delete` | `layer` (`name`, `source`, `date`, `level` red, yellow or nogo, `features[]` of `name` and `polygon`), or `id`. People only |
+| `layer_list` | optional `shapes`. AI may use it. `airports_near` (`lat`, `lon`, `km`) lists the built-in airports |
+| `advisory_disclaimer_ack` | none. Logged; `ops.advisoryDisclaimerAt` |
 | `mission_clear` | none. Takes the loaded mission or sent plan off the phone. Not while one runs. People only |
 | `sim_set` | Only with the Simulated plane: any of `windMps`, `windFromDeg`, `motorFailed`, `linkCut`, and `reset` (disarmed: back to the start). `ops.sim` reports it, with `airspeed`, `heightM`, `onGround`, `crashed` and `touchdown`. People only |
-| `plan_upload` | `plan`. People only. Needs home set: the plan is compiled against the real home, and loaded only if it checks out. The ack's `data` is the same as `plan_check`'s. Replaces any loaded mission; `ops.planData` then holds the file |
+| `plan_upload` | `plan`, and `acknowledged[]`: the ids of the plan's advisory notices, each logged. Without them it answers `needs_ack` with the notices in `data`. People only. Needs home set: the plan is compiled against the real home, and loaded only if it checks out. The ack's `data` is the same as `plan_check`'s. Replaces any loaded mission; `ops.planData` then holds the file |
 | `mission_start` | optional `hash`. For a sent plan it's compiled again and refused if it no longer checks out or its hash changed (home, settings or vehicle). A plane runs only sent plans, and only with `NAV_PLANE_MISS` 1 |
 | `mission_pause`, `mission_resume`, `mission_skip`, `mission_abort` | none |
 | `goto` | `lat`, `lon` |

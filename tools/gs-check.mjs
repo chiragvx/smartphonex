@@ -20,9 +20,15 @@ await new Promise(r => { ws.onopen = r; });
 let id = 0;
 const waiting = new Map();
 const problems = [];
+const dialogs = [];
 ws.onmessage = e => {
   const m = JSON.parse(e.data);
   if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m.result ?? m); waiting.delete(m.id); }
+  // Confirmations (advisory notices before sending, deleting) are answered yes, as a person reading them would.
+  if (m.method === 'Page.javascriptDialogOpening') {
+    dialogs.push(m.params.message);
+    ws.send(JSON.stringify({ id: ++id, method: 'Page.handleJavaScriptDialog', params: { accept: true } }));
+  }
   if (m.method === 'Runtime.exceptionThrown') problems.push('exception: ' + (m.params.exceptionDetails.exception?.description ?? m.params.exceptionDetails.text));
   if (m.method === 'Log.entryAdded' && m.params.entry.level === 'error' && !/tile|arcgis|openstreetmap|ERR_INTERNET|\/session$/.test(m.params.entry.text + (m.params.entry.url ?? ''))) problems.push(`${m.params.entry.source}: ${m.params.entry.text} ${m.params.entry.url ?? ''}`.slice(0, 220));
 };
@@ -276,6 +282,26 @@ await sleep(150);
 await setField('Line spacing', 60);
 check('Wider survey lines fit the battery', await until(async () => /Checks out/.test(await text('#checkState')), 4000), await text('#problems'));
 check('The profile shows over time', await has('.profile svg'));
+// Points marked for the AI, the airport bands, and what flights measured.
+await js(`document.querySelector('[data-tool=anchor]').click()`);
+await clickMap(0.8, 0.2);
+check('Anchors are marked for the AI', await until(async () => /Marked for the AI: A/.test(await text('#anchors')), 2000), await text('#anchors'));
+await clickButton('Clear anchors');
+await js(`document.querySelector('[data-tool=goto]').click()`);
+await js(`document.querySelector('#airportBands').click()`);
+await sleep(600);
+check('The airport bands layer turns on', await js(`document.querySelector('#airportBands').checked`));
+await js(`document.querySelector('#airportBands').click()`);
+await js(`[...document.querySelectorAll('a')].find(a => a.textContent === 'What flights measured')?.click()`);
+check('What flights measured shows', await until(() => has('#learned'), 3000));
+// The plan in 3D: MapLibre, loaded only now.
+await click('#view3d');
+check('The 3D view opens', await until(() => has('#map3d canvas'), 15000), await text('#map3d'));
+await sleep(2500);
+await shot('plan-3d');
+await clickButton('Close 3D');
+await sleep(200);
+check('And closes', !(await has('#map3d')));
 await shot('plan');
 // Kept on the phone by name, then opened again.
 await js(`(() => { const i = document.querySelector('#planName'); i.value = 'gs-check plan'; i.dispatchEvent(new Event('input', { bubbles: true })); i.dispatchEvent(new Event('change', { bubbles: true })); })()`);
@@ -295,7 +321,10 @@ const gpsGood = await js(`[...document.querySelectorAll('.side .check')].every(x
 if (gpsGood) {
   await hold('#missionStart', 1500);
   const ok = await until(async () => /running/.test(await text('#missionState')), 2500);
-  check('Mission starts, with a good GPS position', ok, `${await text('#missionState')} | ${await text('#toasts')}`);
+  // Indoors GPS can be good enough to try but rougher than the plan's arrival radius: the phone rightly refuses.
+  const rough = /tightest arrival radius/.test(await text('#toasts'));
+  if (!ok && rough) console.log(`SKIP  Mission start: GPS is rougher than the plan's arrival radius, and the phone said so: ${(await text('#toasts')).slice(0, 120)}`);
+  else check('Mission starts, with a good GPS position', ok, `${await text('#missionState')} | ${await text('#toasts')}`);
   if (ok) {
     check('Mode shows it', (await text('#modeState')) === 'Mission', await text('#modeState'));
     await click('#stop');
@@ -375,6 +404,11 @@ check('Its plan is checked with height', await until(() => js(`!!document.queryS
 check('Climbs and the landing are in the timeline', await until(async () => /touches down/.test(await text('#timeline')), 3000), (await text('#timeline')).slice(-160));
 await sleep(300);
 await shot('plan-plane');
+await click('#view3d');
+check('A plane plan in 3D', await until(() => has('#map3d canvas'), 15000));
+await sleep(3000);
+await shot('plan-plane-3d');
+await clickButton('Close 3D');
 
 // Narrow layout.
 await cdp('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
@@ -428,6 +462,7 @@ const missionGone = await js(`new Promise(res => {
 })`);
 check('Sent plan cleared', missionGone === true);
 
+for (const d of dialogs) console.log(`DIALOG  ${d.replace(/\s+/g, ' ').slice(0, 220)}`);
 check('No script errors or blocked requests', problems.length === 0, problems.slice(0, 5).join(' || '));
 console.log(`\n${failed ? `${failed} FAILED` : 'ALL PASSED'} (started on ${startProfile})`);
 child.kill();

@@ -25,8 +25,8 @@ object AppData {
     private const val PREVIOUS = ".pre-restore"
     private const val MIGRATE_BACKUP = ".migrate-backup"
 
-    /** Never leave the phone in a backup, and never get overwritten by one: secrets, identity and our own bookkeeping. */
-    val NEVER = setOf("token.txt", "llm-key", "relay.json", "profileInstalled", VERSION_FILE, STAGED, "$STAGED.tmp", PREVIOUS, MIGRATE_BACKUP)
+    /** Never leave the phone in a backup, and never get overwritten by one: secrets, identity, our own bookkeeping, and the map tile cache. */
+    val NEVER = setOf("token.txt", "llm-key", "relay.json", "profileInstalled", "tiles", VERSION_FILE, STAGED, "$STAGED.tmp", PREVIOUS, MIGRATE_BACKUP)
     /** Large and optional. Left out unless asked for. */
     val MEDIA = setOf("photos", "video")
     private val NAME = Regex("^[A-Za-z0-9_][A-Za-z0-9_.\\-]{0,127}$")

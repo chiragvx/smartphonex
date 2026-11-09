@@ -120,7 +120,9 @@ export function createRelay({ dataDir = join(HERE, 'data'), webDir = join(HERE, 
       'x-frame-options': 'DENY',
       // Not no-referrer: that makes browsers send "Origin: null", which fails the same-origin check.
       'referrer-policy': 'same-origin',
-      'content-security-policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: https://tile.openstreetmap.org https://server.arcgisonline.com; connect-src 'self' ws: wss:; frame-ancestors 'none'; form-action 'self'",
+      // The 3D view (MapLibre) fetches imagery and terrain tiles rather than loading them as images, and runs its
+      // worker from a blob; the no-go button asks OpenStreetMap's Overpass. Only those hosts are added.
+      'content-security-policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data: https://tile.openstreetmap.org https://server.arcgisonline.com https://s3.amazonaws.com; connect-src 'self' ws: wss: https://tile.openstreetmap.org https://server.arcgisonline.com https://s3.amazonaws.com https://overpass-api.de; worker-src 'self' blob:; frame-ancestors 'none'; form-action 'self'",
       ...extra,
     });
     res.end(body);

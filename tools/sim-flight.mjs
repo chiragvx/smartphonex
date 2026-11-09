@@ -68,7 +68,13 @@ const makePlan = () => ({
 });
 let plan = makePlan();
 const fly = async () => {
-  const up = await cmd('plan_upload', { plan });
+  let up = await cmd('plan_upload', { plan });
+  // Advisory notices are read and acknowledged, as a person would: they never stop the plan, and the phone logs it.
+  if (up.code === 'needs_ack') {
+    const adv = up.data?.advisories ?? [];
+    for (const a of adv) console.log(`    notice: ${a.text}`);
+    up = await cmd('plan_upload', { plan, acknowledged: adv.map(a => a.id) });
+  }
   check('The plan is sent, checked against home', up.accepted, up.message);
   // Just after a reset the position is still settling: give it a few seconds.
   let start;
@@ -104,6 +110,13 @@ const d0 = metres()?.n ?? 0;
 await sleep(12000);
 check('And it heads home', (metres()?.n ?? 1e9) < d0 - 50, `${Math.round(d0)} m out, then ${Math.round(metres()?.n ?? NaN)} m`);
 console.log('   ', status());
+
+// What the flights taught it about planning.
+const learned = await cmd('plan_learning');
+const m = learned.data?.measured ?? {};
+check('The flights measured its climbs', (m.climbs ?? 0) > 0, JSON.stringify(m));
+for (const sg of learned.data?.suggestions ?? []) console.log(`    suggests ${sg.param} ${sg.current} -> ${sg.suggested}: ${sg.basis}`);
+await cmd('plan_learning_forget');
 
 // Leave things as they were.
 await cmd('sim_set', { linkCut: false });

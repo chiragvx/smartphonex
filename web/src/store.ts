@@ -15,6 +15,9 @@ export type Ops = {
   planData?: any;
   divert?: { zone: string; kind: string; glide: boolean; why: string; lat: number; lon: number };
   motorOut?: string; timeLeftS?: number;
+  planProposal?: { plan: any; fence?: FenceData; note: string; from: string; at: number; ok: boolean; problems: number };
+  planAnchors?: { name: string; lat: number; lon: number }[];
+  advisoryDisclaimerAt?: number | null;
   sim?: { windMps: number; windFromDeg: number; motorFailed: boolean; linkCut: boolean; airspeed: number; heightM: number; onGround: boolean; crashed: boolean };
   missionData?: MissionData;
   fence: { set: boolean; breach: string | null; data?: FenceData };

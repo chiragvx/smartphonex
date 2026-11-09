@@ -56,7 +56,8 @@ class McpHandler(private val rt: VehicleRuntime) {
 
     data class Reply(val status: Int, val body: String?)
 
-    private fun allTools() = tools + rt.setup.tools.map { (n, d, s) -> tool(n, d, s) }
+    private val planTools = PlanTools(rt)
+    private fun allTools() = tools + rt.setup.tools.map { (n, d, s) -> tool(n, d, s) } + planTools.tools.map { (n, d, s) -> tool(n, d, s) }
 
     /** The same tools for clients without MCP, and for the built-in assistant. */
     fun listToolsJson() = JsonArray(allTools())
@@ -118,6 +119,7 @@ class McpHandler(private val rt: VehicleRuntime) {
                 "vehicle_show_face" -> command(args, "face_show")
                 "vehicle_configure_pid" -> command(args, "configure_pid")
                 "vehicle_run_mission" -> command(args, "run_mission")
+                in planTools.names -> { val (body, err) = planTools.call(name, args); content(body, err) }
                 in rt.setup.toolNames -> {
                     val out = rt.setup.call(name, args)
                     content(out, (out["ok"] as? JsonPrimitive)?.booleanOrNull == false)

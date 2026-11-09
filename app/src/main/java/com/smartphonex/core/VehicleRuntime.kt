@@ -193,6 +193,23 @@ class VehicleRuntime(val dir: File) {
     @Volatile private var sensorThreadRunning = false
     @Volatile private var started = false
     val faults = Faults()
+    /**
+     * Fetches a web page as text, for place lookups the AI asks for. Plain Java networking, swapped out in tests.
+     * Identifies the app, never the person.
+     */
+    /** Map tiles kept on the phone for working offline. Fetched with the app's name, never the person's. */
+    val tiles = TileCache(File(dir, "tiles")) { url ->
+        val c = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        c.connectTimeout = 6000; c.readTimeout = 10000
+        c.setRequestProperty("User-Agent", "SmartPhoneX ground station")
+        try { if (c.responseCode == 200) c.inputStream.readBytes() else null } finally { c.disconnect() }
+    }
+    @Volatile var webGet: (String) -> String = { url ->
+        val c = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        c.connectTimeout = 8000; c.readTimeout = 15000
+        c.setRequestProperty("User-Agent", "SmartPhoneX mission planner")
+        try { c.inputStream.bufferedReader().readText() } finally { c.disconnect() }
+    }
     val token: String = loadToken(File(dir, "token.txt"))
     val pairing = Pairing(token)
     /** Latest network and relay state, set by the Android layer and read by the links. */

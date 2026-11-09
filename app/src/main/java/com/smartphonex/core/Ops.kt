@@ -323,9 +323,12 @@ class MissionEngine(private val clock: () -> Long) {
     private var waitThen: String? = null
     private val missLogged = HashSet<String>()
     @Volatile var lateS: Double? = null; private set
+    /** How long the last leg took, seconds, when nothing made it wait on the way. */
+    @Volatile var lastLegS: Double? = null; private set
+    private var legWaited = false
 
     private fun resetLeg(now: Long) {
-        legStartMs = now; everyNext.clear(); orbitSwept = 0.0; orbitLast = null; waitKind = null; arrived = false; holdUntil = 0
+        legStartMs = now; everyNext.clear(); orbitSwept = 0.0; orbitLast = null; waitKind = null; arrived = false; holdUntil = 0; legWaited = false
     }
     @Synchronized fun load(m: Mission) { mission = m; state = State.IDLE; index = 0; arrived = false; lateS = null }
     @Synchronized fun clear() { mission = null; state = State.IDLE; index = 0; arrived = false; lateS = null }
@@ -358,6 +361,7 @@ class MissionEngine(private val clock: () -> Long) {
             "skip" -> { onMiss("$where: $why. Skipped"); advance(g); return step(g, null) }
             "abort" -> { onMiss("$where: $why. Aborting: going home"); state = State.ABORTED; return Step.Abort("$where: $why") }
             else -> if (waitKind != kind) {
+                legWaited = true
                 waitKind = kind; waitUntil = clock() + (r.maxS * 1000).toLong(); waitThen = r.then
                 onMiss("$where: $why. ${if (r.act == "circle") "Circling" else "Holding"} up to ${r.maxS.toInt()} s")
             }
@@ -388,6 +392,7 @@ class MissionEngine(private val clock: () -> Long) {
             fireEvery(p, g, atEnd = true)
             holdUntil = now + (p.holdS * 1000).toLong()
             p.expectAt?.let { lateS = (now - startMs) / 1000.0 - it }
+            lastLegS = if (legWaited) null else (now - legStartMs) / 1000.0
             onArrive(p, index)
         }
         if (!arrived) {
@@ -486,6 +491,8 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
     /** Nothing is being driven by a test, so the microphone may learn background sounds. */
     fun outputsAtRest() = tester.active() == null && !groundRun.running()
     val missions = MissionEngine(System::currentTimeMillis)
+    /** What plans can really count on, measured in flight. */
+    val learning = PlanLearning(File(dir, "learning.json")) { job -> writer.execute(job) }
     private fun store(f: File, text: String) = writer.execute { runCatching { atomicWrite(f, text) } }
     /** Waits for queued saves. For shutdown and tests. */
     fun flush() { runCatching { writer.submit {}.get(5, java.util.concurrent.TimeUnit.SECONDS) } }
@@ -497,6 +504,12 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
     private val planFile = File(dir, "plan.json")
     /** The plan file a person sent, while its compiled mission is the one loaded. */
     @Volatile private var loadedPlan: JsonObject? = null
+    /** The plan a person last checked: what they're working on, for the AI to read. */
+    @Volatile var lastDraft: JsonObject? = null; private set
+    /** A plan (and maybe a fence) the AI proposes. A person sees it beside theirs and decides. */
+    @Volatile var proposal: JsonObject? = null; private set
+    /** Points a person marked on the map for the AI to build around, so it never has to guess coordinates. */
+    @Volatile var anchors: JsonArray = JsonArray(emptyList()); private set
     private val fired = HashMap<String, Long>()
     private val counts = HashMap<String, Int>()
     private val prepared = HashMap<String, Long>()
@@ -532,6 +545,9 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
             val late = missions.lateS?.let { l -> if (abs(l) < 2) ", on time" else if (l > 0) ", ${l.toInt()} s late" else ", ${(-l).toInt()} s early" } ?: ""
             rt.log.event("mission", "phone", "arrived", "reached point ${i + 1}" + (item.step?.let { " (step $it)" } ?: "") + late)
             item.triggers.forEach { fire(it, Source.BEHAVIOR, "waypoint ${i + 1}") }
+            // A plan's leg against its planned time, if it was long enough to say anything.
+            val e = item.expectS; val actual = missions.lastLegS
+            if (item.line && e != null && e >= 8 && actual != null && actual > 0) learning.pace(vehicle, e / actual)
         }
         missions.onEvery = { t, item, i -> fire(t, Source.BEHAVIOR, "along the leg to point ${i + 1}" + (item.step?.let { " (step $it)" } ?: "")) }
         missions.onMiss = { rt.log.event("mission", "phone", "miss", it) }
@@ -824,6 +840,102 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
                 if (a.b("reset") == true) { if (mode != Mode.DISARMED) return no("not_permitted", "disarm first"); s.reset(); simLinkCut = false }
                 CommandResult.OK
             }
+            "plan_propose" -> {
+                val plan = a["plan"] as? JsonObject ?: return no("malformed", "plan is required")
+                val f = (a["fence"] as? JsonObject)?.let { runCatching { Geo.parseFence(it) }.getOrNull() ?: return no("invalid", "invalid fence") }
+                if (f != null && f.action !in setOf("hold", "home", "stop", "warn")) return no("invalid", "fence action must be hold, home, stop or warn")
+                if (plan.toString().length > 500_000) return no("out_of_range", "that plan is too big")
+                val r = checkPlan(plan, p)
+                proposal = buildJsonObject {
+                    put("plan", plan); f?.let { put("fence", Geo.fenceJson(it)) }
+                    put("note", a.s("note")?.take(400) ?: ""); put("from", source.name); put("at", System.currentTimeMillis())
+                    put("ok", r.ok); put("problems", r.problems.size)
+                }
+                rt.log.event("mission", source.name, "proposed", "a plan was proposed: ${(plan["steps"] as? JsonArray)?.size ?: 0} steps" + if (f != null) ", with a fence" else "")
+                CommandResult(true, if (r.ok) "ok" else "problems", if (r.ok) "proposed; a person decides" else "proposed with ${r.problems.size} problem(s): ${r.problems.first().text}", r.json)
+            }
+            "plan_proposal_clear" -> { proposal = null; CommandResult.OK }
+            "plan_anchors_set" -> {
+                val list = a["anchors"] as? JsonArray ?: return no("malformed", "anchors is required")
+                if (list.size > 26) return no("out_of_range", "at most 26 anchors")
+                anchors = JsonArray(list.mapNotNull { x ->
+                    val o = x as? JsonObject ?: return@mapNotNull null
+                    val lat = o.d("lat"); val lon = o.d("lon")
+                    if (lat == null || lon == null || lat !in -90.0..90.0 || lon !in -180.0..180.0) null
+                    else buildJsonObject { put("name", o.s("name")?.take(20) ?: "?"); put("lat", lat); put("lon", lon) }
+                })
+                CommandResult.OK
+            }
+            "layer_save" -> {
+                val (l, err) = Advisories.parseLayer(a["layer"] as? JsonObject ?: JsonObject(emptyMap()))
+                if (l == null) return no("invalid", err ?: "invalid layer")
+                val list = layers().filter { it.id != l.id }
+                if (list.size >= 20) return no("out_of_range", "20 layers are kept at most. Delete some first")
+                saveLayers(list + l)
+                rt.log.event("advisory", source.name, "layer", "layer ${l.name} saved: ${l.features.size} areas from ${l.source}, ${l.date}")
+                CommandResult(true, "ok", "", buildJsonObject { put("id", l.id) })
+            }
+            "layer_list" -> CommandResult(true, "ok", "", buildJsonObject {
+                put("layers", JsonArray(layers().map { Advisories.layerJson(it, withShapes = a.b("shapes") == true) }))
+                put("disclaimer", Advisories.DISCLAIMER); put("disclaimerAt", disclaimerAt)
+            })
+            "layer_delete" -> {
+                val id = a.s("id") ?: return no("malformed", "id is required")
+                val list = layers()
+                if (list.none { it.id == id }) return no("out_of_range", "no layer $id")
+                saveLayers(list.filter { it.id != id })
+                CommandResult.OK
+            }
+            "airports_near" -> {
+                val lat = a.d("lat"); val lon = a.d("lon")
+                if (lat == null || lon == null) return no("malformed", "lat and lon are required")
+                val km = (a.d("km") ?: 30.0).coerceIn(1.0, 150.0)
+                CommandResult(true, "ok", "", buildJsonObject {
+                    put("source", Advisories.AIRPORT_SOURCE)
+                    putJsonArray("airports") { Advisories.airportsNear(lat, lon, km).forEach { x -> addJsonObject { put("code", x.code); put("name", x.name); put("lat", x.lat); put("lon", x.lon); put("allowanceKm", x.allowanceKm) } } }
+                })
+            }
+            "advisory_disclaimer_ack" -> {
+                val at = System.currentTimeMillis()
+                atomicWrite(disclaimerFile, buildJsonObject { put("at", at); put("by", source.name) }.toString())
+                disclaimerAt = at
+                rt.log.event("advisory", source.name, "disclaimer", "Accepted: ${Advisories.DISCLAIMER}")
+                CommandResult.OK
+            }
+            "plan_learning" -> {
+                val (c, pc, gl) = learning.counts(vehicle)
+                CommandResult(true, "ok", "", buildJsonObject {
+                    putJsonObject("measured") { put("climbs", c); put("legs", pc); put("glides", gl) }
+                    putJsonArray("suggestions") {
+                        learning.suggestions(vehicle) { rt.params.get(it, p.vehicleType) }.forEach { s -> addJsonObject { put("param", s.param); put("current", s.current); put("suggested", s.suggested); put("basis", s.basis) } }
+                    }
+                })
+            }
+            "plan_learning_apply" -> {
+                val name = a.s("param") ?: return no("malformed", "param is required")
+                val s = learning.suggestions(vehicle) { rt.params.get(it, p.vehicleType) }.firstOrNull { it.param == name } ?: return no("out_of_range", "there's no suggestion for $name now")
+                val old = rt.params.get(name, p.vehicleType)
+                rt.params.set(name, s.suggested)?.let { return no("out_of_range", it) }
+                recordParam(name, old, s.suggested)
+                rt.log.event("param", source.name, "learned", "$name $old -> ${s.suggested}: ${s.basis}")
+                CommandResult.OK
+            }
+            "plan_learning_forget" -> { learning.forget(vehicle); CommandResult.OK }
+            "plan_export_qgc" -> {
+                val plan = a["plan"] as? JsonObject ?: return no("malformed", "plan is required")
+                val r = checkPlan(plan, p)
+                if (!r.ok) return no("invalid", "only a plan that checks out can be exported: ${r.problems.first().text}")
+                CommandResult(true, "ok", "", buildJsonObject { put("qgc", QgcPlan.export(r, plan, fence, rt.fc.homeNow, PlanPerf.from(rt.params, p.vehicleType))) })
+            }
+            "plan_import_qgc" -> {
+                val q = a["qgc"] as? JsonObject ?: return no("malformed", "qgc is required")
+                val im = runCatching { QgcPlan.import(q) }.getOrElse { return no("invalid", it.message ?: "not a QGroundControl plan") }
+                CommandResult(true, "ok", "", buildJsonObject {
+                    put("plan", im.plan)
+                    im.fence?.let { put("fence", Geo.fenceJson(it)) }
+                    putJsonArray("notes") { im.notes.forEach { add(it) } }
+                })
+            }
             "mission_clear" -> {
                 if (missions.state == MissionEngine.State.RUNNING || missions.state == MissionEngine.State.PAUSED) return no("not_permitted", "stop the running mission first")
                 missions.clear()
@@ -862,6 +974,12 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
                 val r = checkPlan(plan, p)
                 val m = r.mission
                 if (!r.ok || m == null) return CommandResult(false, "invalid", r.problems.joinToString("; ") { (it.step?.let { s -> "$s: " } ?: "") + it.text }, r.json)
+                // Advisory notices don't block, but they're shown and acknowledged before sending, and that's logged.
+                val adv = (r.json["advisories"] as? JsonArray)?.map { it.jsonObject } ?: emptyList()
+                val acked = (a["acknowledged"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }?.toSet() ?: emptySet()
+                val unacked = adv.filter { it["id"]!!.jsonPrimitive.content !in acked }
+                if (unacked.isNotEmpty()) return CommandResult(false, "needs_ack", "acknowledge ${unacked.size} advisory notice(s) first: ${unacked.first()["text"]!!.jsonPrimitive.content}", r.json)
+                adv.forEach { rt.log.event("advisory", source.name, "acknowledged", "Acknowledged before sending ${m.name}: ${it["text"]!!.jsonPrimitive.content} [${it["source"]!!.jsonPrimitive.content}]") }
                 missions.load(m)
                 loadedPlan = plan
                 store(planFile, plan.toString())
@@ -871,6 +989,7 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
             }
             "plan_check" -> {
                 val plan = a["plan"] as? JsonObject ?: return no("malformed", "plan is required")
+                if (human) lastDraft = plan
                 val r = checkPlan(plan, p)
                 CommandResult(true, if (r.ok) "ok" else "problems", if (r.ok) "plan checks out" else "${r.problems.size} problem(s): ${r.problems.first().text}", r.json)
             }
@@ -1116,6 +1235,7 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
             }
         }
         if (armed) contingencies(now, est) else { timeWarned = false; timeActed = false; motorActed = false; outerActed = false }
+        if (armed) learnTick(now) else { climbFrom = null; glideFrom = null }
     }
     private var lastTickSlow = 0L
 
@@ -1185,6 +1305,42 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         rt.log.event("failsafe", "phone", "outer", "${outside.toInt()} m beyond the fence, past its ${f.outerM.toInt()} m outer limit: something is badly wrong. Termination is off: going to the best zone it can reach")
         divert("past the fence's outer limit", lat, lon, Contingency.poweredReachM(secondsLeft(), pf.speed, pf.wind), glide = false)
             ?: rt.fc.force(FlightMode.RETURN_HOME, "past the outer limit")
+    }
+
+    // --- Learning what plans can count on, while flying them.
+
+    private var climbFrom: Pair<Long, Double>? = null
+    private var glideFrom: Triple<Long, Double, GpsFix>? = null
+    private var glidePath = 0.0
+    private var glideLast: GpsFix? = null
+
+    /**
+     * A plane climbing towards a point's height on a plan gives its real climb rate, every 8 s of climbing. A plane
+     * gliding with its motor stopped gives its glide ratio, every 10 s with at least 5 m lost.
+     */
+    private fun learnTick(now: Long) {
+        if (rt.profiles.active.vehicleType != "plane") return
+        val h = rt.fc.heightAboveHome() ?: return
+        val item = missions.currentItem()
+        val climbing = rt.fc.mode == FlightMode.AUTO && item?.alt != null && item.alt - h > 15
+        if (climbing) {
+            val f = climbFrom
+            if (f == null) climbFrom = now to h
+            else if (now - f.first >= 8_000) { learning.climb(vehicle, (h - f.second) / ((now - f.first) / 1000.0)); climbFrom = now to h }
+        } else climbFrom = null
+        val g = rt.fc.gpsNow
+        if (rt.fc.divert?.glide == true && g != null && h > 8) {
+            val f = glideFrom
+            val last = glideLast
+            if (last != null && g.atMs != last.atMs) glidePath += Navigation.distanceM(last.lat, last.lon, g.lat, g.lon)
+            glideLast = g
+            if (f == null) { glideFrom = Triple(now, h, g); glidePath = 0.0 }
+            else if (now - f.first >= 10_000) {
+                val lost = f.second - h
+                if (lost >= 5) learning.glide(vehicle, glidePath / lost)
+                glideFrom = Triple(now, h, g); glidePath = 0.0
+            }
+        } else { glideFrom = null; glideLast = null }
     }
 
     private fun contingencies(now: Long, est: GpsGuard.Estimate?) {
@@ -1261,9 +1417,30 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
     }
 
     /** Compiles a plan for this vehicle, here, against its fence and triggers. Changes nothing. */
-    fun checkPlan(plan: JsonObject, p: VehicleProfile = rt.profiles.active) = PlanCompiler.compile(plan, PlanContext(
-        PlanPerf.from(rt.params, p.vehicleType), rt.fc.homeNow, fence, triggerMap().mapValues { it.value.danger },
-    ))
+    fun checkPlan(plan: JsonObject, p: VehicleProfile = rt.profiles.active): PlanResult {
+        val r = PlanCompiler.compile(plan, PlanContext(PlanPerf.from(rt.params, p.vehicleType), rt.fc.homeNow, fence, triggerMap().mapValues { it.value.danger }))
+        // Advisory notices ride along with the check: they never make it fail.
+        val path = (r.json["path"] as? JsonArray)?.mapNotNull { x -> (x as? JsonArray)?.let { a -> Triple(a[0].jsonPrimitive.double, a[1].jsonPrimitive.double, a[2].jsonPrimitive.double) } } ?: emptyList()
+        val h = rt.fc.homeNow?.let { it.lat to it.lon } ?: (plan["home"] as? JsonArray)?.let { a -> (a.getOrNull(0) as? JsonPrimitive)?.doubleOrNull?.let { la -> (a.getOrNull(1) as? JsonPrimitive)?.doubleOrNull?.let { lo -> la to lo } } }
+        val adv = Advisories.forPath(path, h, layers(), p.vehicleType == "plane")
+        val json = JsonObject(r.json + ("advisories" to JsonArray(adv.map { it.json() })) + ("disclaimer" to JsonPrimitive(Advisories.DISCLAIMER)))
+        return PlanResult(r.ok, r.problems, r.warnings, r.hash, json, r.mission)
+    }
+
+    // --- Advisory layers: imported zones, kept on the phone so its checks use them. See Advisories.
+
+    private val layersFile = File(dir, "layers.json")
+    @Volatile private var layerCache: List<Advisories.Layer>? = null
+    @Synchronized fun layers(): List<Advisories.Layer> = layerCache ?: runCatching {
+        Json.parseToJsonElement(layersFile.readText()).jsonArray.mapNotNull { Advisories.parseLayer(it.jsonObject).first }
+    }.getOrElse { emptyList() }.also { layerCache = it }
+    @Synchronized private fun saveLayers(list: List<Advisories.Layer>) {
+        layerCache = list
+        atomicWrite(layersFile, JsonArray(list.map { Advisories.layerJson(it) }).toString())
+    }
+    private val disclaimerFile = File(dir, "advisory-disclaimer.json")
+    /** When a person accepted the advisory disclaimer, or null. */
+    @Volatile var disclaimerAt: Long? = runCatching { Json.parseToJsonElement(File(dir, "advisory-disclaimer.json").readText()).jsonObject["at"]!!.jsonPrimitive.long }.getOrNull(); private set
 
     fun validateMission(m: Mission) = Geo.validate(m, fence, rt.fc.homeNow, triggerIds(), rt.profiles.active.maxThrottle)
 
@@ -1402,6 +1579,9 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         } }
         if (canSeePrivate) missions.mission?.let { put("missionData", Geo.missionJson(it)) }
         if (canSeePrivate) loadedPlan?.let { put("planData", it) }
+        if (canSeePrivate) proposal?.let { put("planProposal", it) }
+        put("advisoryDisclaimerAt", disclaimerAt)
+        if (canSeePrivate && anchors.isNotEmpty()) put("planAnchors", anchors)
         put("fence", buildJsonObject { put("set", fence.isSet); put("breach", breachReason); if (canSeePrivate) put("data", Geo.fenceJson(fence)) })
         put("triggers", triggersJson())
         put("diag", diagRunning)
@@ -1438,6 +1618,6 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         const val WEAK_SIGNAL = 30.0
         const val MAX_PHOTOS = 500
         const val MAX_LOG_ROWS = 20_000
-        val AI_ALLOWED = setOf("plan_check", "plan_list", "plan_load","trigger_fire", "mission_upload", "mission_pause", "mission_abort", "face_express", "face_show")
+        val AI_ALLOWED = setOf("plan_check", "plan_propose", "layer_list", "airports_near", "plan_list", "plan_load", "plan_export_qgc", "plan_import_qgc", "plan_learning", "trigger_fire", "mission_upload", "mission_pause", "mission_abort", "face_express", "face_show")
     }
 }

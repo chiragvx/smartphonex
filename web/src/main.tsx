@@ -1,13 +1,17 @@
 import { render } from 'preact';
 import { useState } from 'preact/hooks';
 import './style.css';
-import { ackAlert, armed, cmd, isMuted, isOperator, pair, S, setMuted, stale, staleMs, start, useStore } from './store';
+import { ackAlert, armed, authQuery, cmd, isMuted, isOperator, pair, S, setMuted, stale, staleMs, start, useStore } from './store';
+import { setTileVia } from './map';
 import { modeLabel } from './parts';
 import { Operate } from './operate';
 import { Plan } from './plan';
 import { TestPage } from './test';
 import { Setup } from './setup';
 import { Review } from './review';
+
+// Map tiles through the phone when talking to it directly (not through the relay): it keeps them for working offline.
+setTileVia((layer, z, x, y) => (S.relay ? null : `/tile/${layer}/${z}/${x}/${y}${authQuery()}`));
 
 const initialPage = start();
 const PAGES = [['operate', 'Operate'], ['plan', 'Plan'], ['test', 'Test'], ['setup', 'Setup'], ['review', 'Review']] as const;

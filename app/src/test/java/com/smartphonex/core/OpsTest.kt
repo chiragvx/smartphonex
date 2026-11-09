@@ -492,6 +492,47 @@ class OpsRuntimeTest {
         assertNull("checking changes nothing", rt.ops.missions.mission)
     }
 
+    /** Sends a plan as a person would: reading any advisory notices and acknowledging them. */
+    private fun send(plan: JsonObject): CommandResult {
+        val first = ops("plan_upload") { put("plan", plan) }
+        if (first.code != "needs_ack") return first
+        val ids = first.data!!["advisories"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }
+        return ops("plan_upload") { put("plan", plan); putJsonArray("acknowledged") { ids.forEach { add(it) } } }
+    }
+
+    @Test fun advisoryNoticesAreShownAcknowledgedAndLoggedButNeverBlock() {
+        gps()
+        assertNull(rt.fc.setHomeHere())
+        // This test site is 0.7 km from Safdarjung Airport.
+        val check = ops("plan_check") { put("plan", roverPlan(60.0)) }.data!!
+        assertEquals("advisories don't make a plan fail", true, check["ok"]!!.jsonPrimitive.boolean)
+        val adv = check["advisories"]!!.jsonArray.map { it.jsonObject }
+        val a = adv.single { "Safdarjung" in it["text"]!!.jsonPrimitive.content }
+        assertTrue("Digital Sky" in a["text"]!!.jsonPrimitive.content && "local police" in a["text"]!!.jsonPrimitive.content)
+        assertFalse("never says compliant on its own", adv.any { "is compliant" in it["text"]!!.jsonPrimitive.content })
+        assertTrue("the source and its date are said", "OurAirports" in a["source"]!!.jsonPrimitive.content && "2026" in a["source"]!!.jsonPrimitive.content)
+        assertTrue(check["disclaimer"]!!.jsonPrimitive.content.contains("operator's responsibility"))
+        val refused = ops("plan_upload") { put("plan", roverPlan(60.0)) }
+        assertEquals("needs_ack", refused.code)
+        assertTrue(send(roverPlan(60.0)).accepted)
+        assertTrue("the acknowledgement is logged with its notice", rt.log.allEvents().any { it.kind == "advisory" && it.code == "acknowledged" && "Safdarjung" in it.message })
+        // An imported zone counts too, with its own source and date.
+        val zone = buildJsonObject {
+            put("name", "Traced red zone"); put("source", "Digital Sky map, traced by hand"); put("date", "2026-11-01"); put("level", "red")
+            putJsonArray("features") { addJsonObject { put("name", "Test area"); putJsonArray("polygon") {
+                listOf(north(40.0) to LON - 0.001, north(40.0) to LON + 0.001, north(80.0) to LON + 0.001, north(80.0) to LON - 0.001).forEach { (la, lo) -> addJsonArray { add(la); add(lo) } }
+            } } }
+        }
+        assertTrue(ops("layer_save") { put("layer", zone) }.accepted)
+        assertFalse("the AI can't add layers", ops("layer_save", Source.AI) { put("layer", zone) }.accepted)
+        val red = ops("plan_check") { put("plan", roverPlan(60.0)) }.data!!["advisories"]!!.jsonArray.map { it.jsonObject }.single { it["level"]!!.jsonPrimitive.content == "red" }
+        assertTrue(red.toString(), "Test area" in red["text"]!!.jsonPrimitive.content && "2026-11-01" in red["source"]!!.jsonPrimitive.content)
+        assertTrue(ops("layer_delete") { put("id", "traced-red-zone") }.accepted)
+        assertTrue(ops("advisory_disclaimer_ack").accepted)
+        assertNotNull(rt.ops.disclaimerAt)
+        assertTrue(ops("airports_near", Source.AI) { put("lat", LAT); put("lon", LON) }.data!!["airports"]!!.jsonArray.any { "VIDD" in it.toString() })
+    }
+
     private fun roverPlan(north: Double) = buildJsonObject {
         put("format", PlanCompiler.FORMAT); put("name", "walk")
         putJsonArray("steps") {
@@ -509,7 +550,7 @@ class OpsRuntimeTest {
         assertEquals("invalid", bad.code)
         assertNotNull("the problems come back with it", bad.data)
 
-        val up = ops("plan_upload") { put("plan", roverPlan(60.0)) }
+        val up = send(roverPlan(60.0))
         assertTrue(up.message, up.accepted)
         val hash = rt.ops.missions.mission!!.hash!!
         assertEquals(hash, up.data!!["hash"]!!.jsonPrimitive.content)
@@ -546,16 +587,32 @@ class OpsRuntimeTest {
     private fun startZoned(linkLoss: String = "home") {
         gps()
         assertNull(rt.fc.setHomeHere())
-        assertTrue(ops("plan_upload") { put("plan", zonedPlan(linkLoss)) }.accepted)
+        assertTrue(send(zonedPlan(linkLoss)).accepted)
         assertEquals("home and the plan's zone travel with it", listOf("home", "yard"), rt.ops.missions.mission!!.zones.map { it.id })
         assertTrue(ops("mission_start").accepted)
         tick(2)
     }
 
+    @Test fun learnedPlanningNumbersArePersonApproved() {
+        rt.profiles.select("plane")
+        listOf(2.0, 2.1, 1.9).forEach { rt.ops.learning.climb("plane", it) }
+        val r = ops("plan_learning", Source.AI)
+        assertTrue("the AI may read them", r.accepted)
+        val s = r.data!!["suggestions"]!!.jsonArray.single().jsonObject
+        assertEquals("PLAN_CLIMB", s["param"]!!.jsonPrimitive.content)
+        assertEquals(1.8, s["suggested"]!!.jsonPrimitive.double, 1e-9)
+        assertFalse("but not apply them", ops("plan_learning_apply", Source.AI) { put("param", "PLAN_CLIMB") }.accepted)
+        assertEquals("only what was suggested", "out_of_range", ops("plan_learning_apply") { put("param", "PLAN_SPEED") }.code)
+        assertTrue(ops("plan_learning_apply") { put("param", "PLAN_CLIMB") }.accepted)
+        assertEquals(1.8, rt.params.get("PLAN_CLIMB", "plane"), 1e-9)
+        assertTrue(rt.log.allEvents().any { it.code == "learned" && "PLAN_CLIMB" in it.message })
+        assertTrue("and it's undoable from the settings history", rt.ops.paramHistoryJson().any { (it as JsonObject)["name"]!!.jsonPrimitive.content == "PLAN_CLIMB" })
+    }
+
     @Test fun aSentPlanCanBeClearedAndStaysCleared() {
         gps()
         assertNull(rt.fc.setHomeHere())
-        assertTrue(ops("plan_upload") { put("plan", roverPlan(60.0)) }.accepted)
+        assertTrue(send(roverPlan(60.0)).accepted)
         assertFalse("a person clears it", ops("mission_clear", Source.AI).accepted)
         assertTrue(ops("mission_clear").accepted)
         assertNull(rt.ops.missions.mission)
@@ -644,7 +701,7 @@ class OpsRuntimeTest {
             put("format", PlanCompiler.FORMAT)
             putJsonArray("steps") { addJsonObject { put("do", "goto"); put("at", buildJsonArray { add(north(300.0)); add(LON) }); put("alt", 60.0) }; addJsonObject { put("do", "home"); put("alt", 60.0) } }
         }
-        val up = ops("plan_upload") { put("plan", plan) }
+        val up = send(plan)
         assertTrue(up.message, up.accepted)
         val r = ops("mission_start")
         assertEquals("unsupported", r.code)

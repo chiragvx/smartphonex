@@ -1,6 +1,6 @@
 // Build what it will do: a plan file on a map, checked live by the phone, or poses on a timeline for jointed devices.
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { cmd, isOperator, S, type FenceData } from './store';
+import { authQuery, cmd, isOperator, S, type FenceData } from './store';
 import { HoldButton, LayerSwitch, Panel, useMap } from './parts';
 import { drawHome, drawVehicle, type LatLon, type TileMap } from './map';
 
@@ -26,7 +26,16 @@ type Checked = {
   ok: boolean; problems: Issue[]; warnings: Issue[]; hash: string | null; timeline: Ev[]; gaps: Gap[];
   summary: { distanceM: number; timeS: number; timeLoS: number; timeHiS: number; batteryPct: number; maxAltM?: number; points: number };
   assumptions: Record<string, string | number>; path: [number, number, number, number][];
+  advisories?: Advisory[]; disclaimer?: string;
 };
+type Advisory = { id: string; level: string; text: string; source: string; lat?: number; lon?: number };
+type AdvLayer = { id: string; name: string; source: string; date: string; level: string; count: number; features?: { name: string | null; polygon: [number, number][] }[] };
+
+// Advisory layers on the map: airport bands and imported zones. Information only: see the disclaimer.
+let airportsView: { code: string; name: string; lat: number; lon: number; allowanceKm: number }[] = [];
+let layersView: AdvLayer[] = [];
+let showAirports = false;
+let showLayers = true;
 
 const FORMAT = 'smartphonex.plan/1';
 const copy = <T,>(x: T): T => JSON.parse(JSON.stringify(x));
@@ -49,6 +58,7 @@ type Draft = { plan: PlanFile; fence: FenceData };
 let draft: Draft = { plan: emptyPlan(), fence: emptyFence() };
 let loadedFromPhone = false;
 let fenceSent = true;
+let anchorsDraft: { name: string; lat: number; lon: number }[] | null = null;
 const undoStack: Draft[] = [];
 const redoStack: Draft[] = [];
 
@@ -60,7 +70,7 @@ function newId(kind: string) {
 /** The position a step is drawn and inserted at. */
 const anchor = (s: Step): LL | undefined => s.at ?? s.center ?? s.area?.[0] ?? s.path?.[0] ?? s.points?.[s.points.length - 1];
 
-type Tool = 'goto' | 'survey' | 'corridor' | 'orbit' | 'hold' | 'land' | 'zone-landing' | 'zone-ditch' | 'home' | 'fence' | 'keepout';
+type Tool = 'goto' | 'survey' | 'corridor' | 'orbit' | 'hold' | 'land' | 'zone-landing' | 'zone-ditch' | 'home' | 'fence' | 'keepout' | 'anchor';
 const TOOLS: [Tool, string, string][] = [
   ['goto', 'Point', 'Click to add a point after the selected step. Drag anything to move it; click + on a leg to insert.'],
   ['survey', 'Survey', 'Click the corners of the area, then Finish.'],
@@ -73,6 +83,7 @@ const TOOLS: [Tool, string, string][] = [
   ['home', 'Planning home', 'Click where it will start. The phone\'s own home replaces it when sent.'],
   ['fence', 'Fence', 'Click to outline where it may go.'],
   ['keepout', 'Keep-out', 'Click to outline a place to stay out of, then Finish.'],
+  ['anchor', 'Anchor', 'Click to mark points (A, B, C...) for the AI to build a plan around. It never has to guess coordinates.'],
 ];
 
 /** Something on the map that can be dragged. */
@@ -88,6 +99,7 @@ function MapPlan() {
   const [hover, setHover] = useState<number | null>(null);
   const [library, setLibrary] = useState<{ name: string; savedAt: number; steps: number }[] | null>(null);
   const [picked, setPicked] = useState<Handle | null>(null);
+  const [show3d, setShow3d] = useState(false);
   const drawing = useRef<LL[]>([]);
   const toolRef = useRef(tool); toolRef.current = tool;
   const selRef = useRef(sel); selRef.current = sel;
@@ -103,7 +115,8 @@ function MapPlan() {
   const timer = useRef<any>(null);
   const runCheck = async () => {
     const mine = ++seq.current;
-    if (!plan.steps.length) { setChecked(null); return; }
+    // The plan as it is now: this can run from a click handler made before the plan was replaced.
+    if (!draft.plan.steps.length) { setChecked(null); return; }
     setChecking(true);
     const r = await cmd('plan_check', { plan: withHome() }, { quiet: true });
     if (mine !== seq.current) return;
@@ -198,6 +211,7 @@ function MapPlan() {
           insert({ id: newId('land'), do: 'land', at, heading: prev ? bearing(prev, at) : 0 }, p.steps.length);
         }
         else if (t === 'home') p.home = at;
+        else if (t === 'anchor') { const list = anchorsNow(); if (list.length < 26) setAnchors([...list, { name: String.fromCharCode(65 + list.length), lat: at[0], lon: at[1] }]); }
         else if (t === 'zone-landing' || t === 'zone-ditch') (p.zones ??= []).push({ id: newId('zone'), kind: t === 'zone-ditch' ? 'ditch' : 'landing', at, radius: 30 });
       });
     };
@@ -229,6 +243,17 @@ function MapPlan() {
       g.setLineDash(dash); g.lineWidth = 2; g.strokeStyle = stroke; if (closed) { g.fillStyle = fill; g.fill(); } g.stroke(); g.setLineDash([]);
     };
     const p = draft.plan, f = draft.fence, c = checkedRef.current;
+    if (showAirports) for (const a of airportsView) {
+      const s = P([a.lat, a.lon]);
+      for (const [km, color] of [[12, 'rgba(250,204,21,.55)'], [8, 'rgba(250,204,21,.9)']] as const) {
+        g.beginPath(); g.arc(s.x, s.y, (km + a.allowanceKm) * 1000 / m.metersPerPixel(), 0, 7);
+        g.setLineDash(km === 12 ? [6, 6] : []); g.lineWidth = 2; g.strokeStyle = color; g.stroke(); g.setLineDash([]);
+      }
+      g.fillStyle = 'rgba(250,204,21,.95)'; g.font = '11px system-ui, sans-serif'; g.fillText(`${a.code} 8/12 km (approx.)`, s.x + 6, s.y - 6);
+    }
+    if (showLayers) for (const l of layersView) for (const ft of l.features ?? []) {
+      poly(ft.polygon, l.level === 'red' ? '#dc2626' : l.level === 'yellow' ? '#eab308' : '#9ca3af', l.level === 'red' ? 'rgba(220,38,38,.18)' : l.level === 'yellow' ? 'rgba(234,179,8,.15)' : 'rgba(156,163,175,.18)');
+    }
     poly(f.polygon, '#e5a823', 'rgba(229,168,35,.06)');
     f.keepOut.forEach(k => poly(k, '#e5484d', 'rgba(229,72,77,.22)'));
     for (const s of p.steps) { if (s.area) poly(s.area, 'rgba(255,255,255,.7)', 'rgba(255,255,255,.08)', true, [4, 4]); if (s.path) poly(s.path, 'rgba(255,255,255,.7)', '', false, [4, 4]); }
@@ -290,6 +315,21 @@ function MapPlan() {
     if (home) drawHome(m, g, home.lat, home.lon);
     const gps = S.fcs?.gps;
     if (gps) drawVehicle(m, g, gps.lat, gps.lon, S.fc?.a?.[2] ?? 0, gps.acc);
+    // Anchors for the AI, and the AI's proposal as a dashed outline to compare.
+    g.font = 'bold 11px system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    for (const a of anchorsNow()) {
+      const s = P([a.lat, a.lon]);
+      g.beginPath(); g.moveTo(s.x, s.y); g.lineTo(s.x - 8, s.y - 16); g.lineTo(s.x + 8, s.y - 16); g.closePath();
+      g.fillStyle = '#a855f7'; g.fill(); g.lineWidth = 1.5; g.strokeStyle = '#fff'; g.stroke();
+      g.fillStyle = '#fff'; g.fillText(a.name, s.x, s.y - 11);
+    }
+    g.textAlign = 'start'; g.textBaseline = 'alphabetic';
+    const prop = S.ops?.planProposal?.plan as PlanFile | undefined;
+    if (prop?.steps) {
+      const pts = prop.steps.map(anchor).filter(Boolean) as LL[];
+      if (pts.length > 1) poly(pts, '#a855f7', '', false, [6, 5]);
+      for (const st of prop.steps) if (st.area) poly(st.area, '#a855f7', 'rgba(168,85,247,.08)', true, [6, 5]);
+    }
   };
 
   // The first time, start from what's on the phone: the sent plan and the fence.
@@ -321,7 +361,16 @@ function MapPlan() {
       if (!f.accepted) { setSendMsg({ ok: false, text: f.message }); return; }
       fenceSent = true;
     }
-    const r = await cmd('plan_upload', { plan: draft.plan }, { label: 'Send plan' });
+    let r = await cmd('plan_upload', { plan: draft.plan }, { label: 'Send plan', quiet: true });
+    if (r.code === 'needs_ack') {
+      const adv: Advisory[] = r.data?.advisories ?? [];
+      if (!S.ops?.advisoryDisclaimerAt) {
+        if (!confirm(`${r.data?.disclaimer}\n\nI understand.`)) { setSendMsg({ ok: false, text: 'Not sent.' }); return; }
+        await cmd('advisory_disclaimer_ack', {}, { quiet: true });
+      }
+      if (!confirm(`Before sending, read these notices. They don't stop the plan.\n\n${adv.map(a => '- ' + a.text + '\n   (' + a.source + ')').join('\n\n')}\n\nAcknowledge and send?`)) { setSendMsg({ ok: false, text: "Not sent: the notices weren't acknowledged." }); return; }
+      r = await cmd('plan_upload', { plan: draft.plan, acknowledged: adv.map(a => a.id) }, { label: 'Send plan' });
+    }
     if (r.data) setChecked(r.data as Checked);
     setSendMsg({ ok: r.accepted, text: r.accepted ? 'On the phone, checked against its home.' : r.message });
   };
@@ -347,10 +396,23 @@ function MapPlan() {
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   };
   const exportPlan = () => download(JSON.stringify(draft.plan, null, 1), `${plan.name.replace(/\W+/g, '-')}.plan.json`, 'application/json');
+  /** For ArduPilot and PX4 tools: the route as it will be flown, with the fence and safe zones. */
+  const exportQgc = async () => {
+    const r = await cmd('plan_export_qgc', { plan: withHome() }, { label: 'Export for QGroundControl' });
+    if (r.accepted) download(JSON.stringify(r.data.qgc, null, 1), `${plan.name.replace(/\W+/g, '-')}.plan`, 'application/json');
+  };
   const importFile = async (file: File) => {
     try {
       const g = JSON.parse(await file.text());
       if (g.format === FORMAT) { edit(() => { draft.plan = normalise(g); }); setSel(-1); return; }
+      if (g.fileType === 'Plan') {
+        const r = await cmd('plan_import_qgc', { qgc: g }, { label: 'Open QGroundControl plan' });
+        if (!r.accepted) { setSendMsg({ ok: false, text: r.message }); return; }
+        editFence(() => { draft.plan = normalise({ ...r.data.plan, name: file.name.replace(/\.\w+$/, '') }); if (r.data.fence) draft.fence = { ...emptyFence(), ...r.data.fence }; });
+        setSel(-1);
+        setSendMsg({ ok: true, text: ['Opened from QGroundControl.', ...(r.data.notes ?? [])].join(' · ') });
+        return;
+      }
       // GeoJSON: points and lines become points to go to; polygons become the fence and keep-out areas.
       const next = emptyPlan();
       next.name = g.name ?? file.name.replace(/\.\w+$/, '');
@@ -383,12 +445,14 @@ function MapPlan() {
           ))}
           <button onClick={undo} disabled={!undoStack.length}>Undo</button>
           <button onClick={redo} disabled={!redoStack.length}>Redo</button>
+          <button id="view3d" class={show3d ? 'sel' : ''} disabled={!checked?.path.length} onClick={() => setShow3d(!show3d)}>3D</button>
           <button id="newPlan" disabled={!plan.steps.length && !(plan.zones ?? []).length} onClick={() => { edit(() => { draft.plan = emptyPlan(); }); setSel(-1); setChecked(null); }}>New plan</button>
         </div>
         <div class="mapwrap">
           <canvas ref={ref} id="planMap" />
           <LayerSwitch map={map.current} />
           <div class="onmap dim">{toolHelp}</div>
+          {show3d && checked && <View3D c={checked} zones={plan.zones ?? []} onClose={() => setShow3d(false)} />}
           {drawingNow && <div class="mapActions">
             <button class="sel" id="finishDrawing" onClick={finishDrawing}>Finish ({drawing.current.length})</button>
             <button onClick={() => { drawing.current = []; refresh(); }}>Cancel</button>
@@ -401,6 +465,7 @@ function MapPlan() {
         {checked && <Profile c={checked} hover={hover} setHover={setHover} focus={focus} plane={plane} />}
       </div>
       <aside class="side">
+        <Proposal current={draft} use={(p, f) => { (f ? editFence : edit)(() => { draft.plan = normalise(copy(p)); if (f) draft.fence = { ...emptyFence(), ...copy(f) }; }); setSel(-1); }} />
         <Panel title="Check" right={checking ? <span class="dim">checking…</span> : null}>
           {!checked && <p class="dim">Add a step and the phone checks the plan as you go.</p>}
           {checked && <div id="checkResult">
@@ -411,7 +476,12 @@ function MapPlan() {
               <div><b class={checked.summary.batteryPct > 100 - Number(checked.assumptions.reservePct ?? 20) ? 'badText' : ''}>{checked.summary.batteryPct}%</b><i>battery</i></div>
             </div>}
             {checked.problems.length > 0 && <ul class="problems" id="problems">{checked.problems.map((p, i) => <li key={i} class="click" onClick={() => focus(p.lat, p.lon, p.step)}>{p.step && <b>{p.step}: </b>}{p.text}</li>)}</ul>}
+            {(checked.advisories?.length ?? 0) > 0 && <div class="advisories" id="advisories">
+              <b>Advisory notices</b> <span class="dim small">· they don't stop the plan</span>
+              <ul>{checked.advisories!.map(a => <li key={a.id} class={`click adv-${a.level}`} onClick={() => focus(a.lat, a.lon, null)}>{a.text} <span class="dim small">({a.source})</span></li>)}</ul>
+            </div>}
             {checked.warnings.length > 0 && <ul class="warnings">{checked.warnings.map((p, i) => <li key={i} class="click" onClick={() => focus(p.lat, p.lon, p.step)}>{p.step && <b>{p.step}: </b>}{p.text}</li>)}</ul>}
+            <Learned />
             <details><summary class="dim">What it assumed</summary>
               <p class="dim mono small">{Object.entries(checked.assumptions).map(([k, v]) => `${k} ${v}`).join(' · ')}</p>
               <p class="dim small">Change these on Setup, under Planning.</p>
@@ -478,7 +548,8 @@ function MapPlan() {
           <div class="row">
             {isOperator() && <button onClick={savePlan} disabled={!plan.steps.length}>Save as "{plan.name}"</button>}
             <button onClick={exportPlan} disabled={!plan.steps.length}>Download</button>
-            <label class="filebtn">Open file<input type="file" accept=".json,.geojson" onChange={e => { const f = e.currentTarget.files?.[0]; if (f) importFile(f); }} /></label>
+            <button onClick={exportQgc} disabled={!checked?.ok}>For QGroundControl</button>
+            <label class="filebtn">Open file<input type="file" accept=".json,.geojson,.plan" onChange={e => { const f = e.currentTarget.files?.[0]; if (f) importFile(f); }} /></label>
           </div>
           {library && <div class="list" id="library">
             {library.map(l => (
@@ -491,6 +562,8 @@ function MapPlan() {
             {!library.length && <p class="dim">None saved on this phone yet.</p>}
           </div>}
         </Panel>
+
+        <AdvisoryPanel map={mapRef.current} redraw={() => { refresh(); queueCheck(); }} />
 
         <Panel title="Geofence" right={fenceSent ? null : <span class="warnText small">not sent</span>}>
           <p class="dim">Outline {draft.fence.polygon.length} corners, {draft.fence.keepOut.length} keep-out areas. Plans are checked against the fence on the phone.</p>
@@ -516,6 +589,232 @@ function normalise(p: PlanFile): PlanFile {
   out.steps = (p.steps ?? []).map(s => ({ ...s, id: id(s.id, s.do) }));
   out.zones = (p.zones ?? []).map(z => ({ ...z, id: id(z.id, 'zone') }));
   return out;
+}
+
+// --- The plan in 3D, loaded only when it's opened.
+
+let terrain3d = false;
+function View3D({ c, zones, onClose }: { c: Checked; zones: Zone[]; onClose: () => void }) {
+  const box = useRef<HTMLDivElement>(null);
+  const handle = useRef<{ setTerrain: (on: boolean) => void; close: () => void } | null>(null);
+  const [terrain, setTerrain] = useState(terrain3d);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    let dead = false;
+    import('./plan3d').then(m => {
+      if (dead || !box.current) return;
+      const q = authQuery();
+      handle.current = m.mount3d(box.current, {
+        path: c.path, gaps: c.gaps,
+        marks: c.timeline.filter(e => ['action', 'notify', 'hold', 'circle', 'land', 'orbit'].includes(e.kind)).map(e => ({ lat: e.lat, lon: e.lon, kind: e.kind, text: `T+${mmss(e.t)} ${e.step ?? ''}: ${e.text}` })),
+        zones: zones.map(z => ({ at: z.at, radius: z.radius, kind: z.kind })),
+        // Through the phone's tile cache when talking to it directly, so it works offline where it's been looked at.
+        imagery: S.relay ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}' : `${location.origin}/tile/satellite/{z}/{x}/{y}${q}`,
+      }, terrain3d);
+    }).catch(e => setErr(`The 3D view didn't load: ${e?.message ?? e}`));
+    return () => { dead = true; handle.current?.close(); handle.current = null; };
+  }, [c]);
+  return (
+    <div class="view3d" id="map3d">
+      <div ref={box} class="view3dMap" />
+      <div class="view3dBar">
+        <label class="tick"><input type="checkbox" checked={terrain} onChange={e => { const on = e.currentTarget.checked; terrain3d = on; setTerrain(on); handle.current?.setTerrain(on); }} />Terrain</label>
+        <button onClick={onClose}>Close 3D</button>
+      </div>
+      <div class="view3dNote dim small">Heights are above home.{terrain ? ' With terrain, they\'re drawn above the ground beneath: over hills that isn\'t the same.' : ''} Red: no safe zone in reach.</div>
+      {err && <div class="onmap badText">{err}</div>}
+    </div>
+  );
+}
+
+// --- Airspace and no-go areas: advisory only.
+
+/** Areas from a GeoJSON or KML file, as [lat, lon] outlines. */
+async function readAreas(file: File): Promise<{ name: string | null; polygon: [number, number][] }[]> {
+  const text = await file.text();
+  if (/\.kml$/i.test(file.name) || text.trimStart().startsWith('<')) {
+    const doc = new DOMParser().parseFromString(text, 'application/xml');
+    return [...doc.getElementsByTagName('Placemark')].flatMap(pm => {
+      const name = pm.getElementsByTagName('name')[0]?.textContent ?? null;
+      return [...pm.getElementsByTagName('Polygon')].map(pg => {
+        const ring = pg.getElementsByTagName('outerBoundaryIs')[0]?.getElementsByTagName('coordinates')[0]?.textContent ?? pg.getElementsByTagName('coordinates')[0]?.textContent ?? '';
+        return { name, polygon: ring.trim().split(/\s+/).map(c => c.split(',').map(Number)).filter(c => c.length >= 2 && !isNaN(c[0])).map(([lo, la]) => [la, lo] as [number, number]) };
+      });
+    }).filter(a => a.polygon.length >= 3);
+  }
+  const g = JSON.parse(text);
+  const out: { name: string | null; polygon: [number, number][] }[] = [];
+  for (const ft of g.features ?? (g.type === 'Feature' ? [g] : [])) {
+    const geom = ft.geometry; const name = ft.properties?.name ?? null;
+    const rings = geom?.type === 'Polygon' ? [geom.coordinates[0]] : geom?.type === 'MultiPolygon' ? geom.coordinates.map((p: any) => p[0]) : [];
+    for (const r of rings) out.push({ name, polygon: r.map(([lo, la]: number[]) => [la, lo] as [number, number]) });
+  }
+  return out.filter(a => a.polygon.length >= 3);
+}
+
+/** OpenStreetMap areas people usually may not fly or drive over, in the map's view: military land, reserves, prisons, airfields, ports. */
+async function osmNoGo(south: number, west: number, north: number, east: number) {
+  const box = `(${south},${west},${north},${east})`;
+  const q = `[out:json][timeout:25];(way["landuse"="military"]${box};way["military"]${box};way["leisure"="nature_reserve"]${box};way["boundary"="protected_area"]${box};way["amenity"="prison"]${box};way["aeroway"="aerodrome"]${box};way["landuse"="port"]${box};way["harbour"]${box};);out geom 400;`;
+  const r = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+  if (!r.ok) throw new Error(`OpenStreetMap answered ${r.status}`);
+  const j = await r.json();
+  return (j.elements ?? []).map((e: any) => {
+    const t = e.tags ?? {};
+    const kind = t.landuse === 'military' || t.military ? 'military' : t.amenity === 'prison' ? 'prison' : t.aeroway ? 'airfield' : t.landuse === 'port' || t.harbour ? 'port' : 'protected area';
+    return { name: `${t.name ? t.name + ', ' : ''}${kind}`, polygon: (e.geometry ?? []).map((p: any) => [p.lat, p.lon] as [number, number]) };
+  }).filter((a: any) => a.polygon.length >= 3);
+}
+
+/** Airspace and no-go layers: drawn, checked by the phone, announced, never enforced. */
+function AdvisoryPanel({ map, redraw }: { map: TileMap | null; redraw: () => void }) {
+  const [, force] = useState(0);
+  const [busy, setBusy] = useState('');
+  const today = new Date().toISOString().slice(0, 10);
+  const loadLayers = async () => { const r = await cmd('layer_list', { shapes: true }, { quiet: true }); layersView = r.data?.layers ?? []; force(x => x + 1); redraw(); };
+  const loadAirports = async () => {
+    const c = map?.center; if (!c) return;
+    const r = await cmd('airports_near', { lat: c.lat, lon: c.lon, km: 80 }, { quiet: true });
+    airportsView = r.data?.airports ?? []; force(x => x + 1); redraw();
+  };
+  useEffect(() => { loadLayers(); }, []);
+  const save = async (layer: Record<string, unknown>) => { const r = await cmd('layer_save', { layer }, { label: 'Save layer' }); if (r.accepted) loadLayers(); };
+  const importAreas = async (file: File) => {
+    try {
+      const features = await readAreas(file);
+      if (!features.length) { alert('No areas found in that file.'); return; }
+      const level = prompt('What are these? red, yellow or nogo', 'red')?.trim().toLowerCase();
+      if (!level || !['red', 'yellow', 'nogo'].includes(level)) return;
+      const source = prompt('Where are they from? For example: Digital Sky map, traced by hand', 'Digital Sky map, traced by hand')?.trim();
+      const date = prompt('When was that source looked at?', today)?.trim();
+      if (!source || !date) return;
+      await save({ name: file.name.replace(/\.\w+$/, ''), source, date, level, features });
+    } catch { alert('That file is neither GeoJSON nor KML.'); }
+  };
+  const fromOsm = async () => {
+    if (!map) return;
+    const nw = map.fromScreen(0, 0), se = map.fromScreen(map.width, map.height);
+    if (Math.abs(nw.lat - se.lat) > 0.25 || Math.abs(se.lon - nw.lon) > 0.25) { alert('Zoom in to about 25 km across or less first.'); return; }
+    setBusy('Asking OpenStreetMap…');
+    try {
+      const features = await osmNoGo(se.lat, nw.lon, nw.lat, se.lon);
+      if (!features.length) { setBusy('OpenStreetMap has no such areas in view.'); return; }
+      await save({ name: `OpenStreetMap no-go near ${map.center.lat.toFixed(3)}, ${map.center.lon.toFixed(3)}`, source: 'OpenStreetMap contributors (ODbL), via Overpass: may be incomplete', date: today, level: 'nogo', features });
+      setBusy(`${features.length} areas from OpenStreetMap.`);
+    } catch (e) { setBusy(`Couldn't reach OpenStreetMap: ${(e as Error).message}`); }
+  };
+  return (
+    <Panel title="Airspace and no-go">
+      <p class="dim small">For information only. They may be incomplete or out of date, and never stop a plan: the operator checks Digital Sky and the local police.</p>
+      <label class="tick"><input type="checkbox" id="airportBands" checked={showAirports} onChange={e => { showAirports = e.currentTarget.checked; if (showAirports) loadAirports(); else redraw(); force(x => x + 1); }} />Airport bands (India, computed: approximate)</label>
+      <label class="tick"><input type="checkbox" checked={showLayers} onChange={e => { showLayers = e.currentTarget.checked; redraw(); force(x => x + 1); }} />Imported zones</label>
+      <div class="list" id="layers">
+        {layersView.map(l => (
+          <div class="item" key={l.id}>
+            <span class={`grow small adv-${l.level}`}>{l.name} <span class="dim">· {l.count} areas · {l.source}, {l.date}</span></span>
+            {isOperator() && <button onClick={async () => { if (confirm(`Delete the layer "${l.name}"?`)) { await cmd('layer_delete', { id: l.id }, { label: 'Delete layer' }); loadLayers(); } }}>✕</button>}
+          </div>
+        ))}
+      </div>
+      {isOperator() && <div class="row">
+        <label class="filebtn">Import zones<input type="file" accept=".geojson,.json,.kml" onChange={e => { const f = e.currentTarget.files?.[0]; if (f) importAreas(f); }} /></label>
+        <button onClick={fromOsm}>No-go areas from OpenStreetMap</button>
+      </div>}
+      {busy && <p class="dim small">{busy}</p>}
+    </Panel>
+  );
+}
+
+// --- Working with an AI: points marked for it, and what it proposes.
+
+/** The anchors: as just marked here, or as the phone has them. */
+function anchorsNow(): { name: string; lat: number; lon: number }[] { return anchorsDraft ?? (S.ops?.planAnchors as any) ?? []; }
+function setAnchors(list: { name: string; lat: number; lon: number }[]) {
+  anchorsDraft = list;
+  cmd('plan_anchors_set', { anchors: list }, { quiet: true });
+}
+
+type Change = { text: string; looser?: boolean };
+const fenceArea = (p: [number, number][]) => {
+  if (p.length < 3) return 0;
+  const k = 111_320 * Math.cos(p[0][0] * Math.PI / 180);
+  let a = 0;
+  p.forEach(([la, lo], i) => { const [la2, lo2] = p[(i + 1) % p.length]; a += (lo * k) * (la2 * 111_320) - (lo2 * k) * (la * 111_320); });
+  return Math.abs(a / 2);
+};
+
+/** What a proposal changes from the plan here. Anything that loosens a restriction is marked. */
+function diff(cur: Draft, plan: PlanFile, fence?: FenceData): Change[] {
+  const out: Change[] = [];
+  const before = new Map(cur.plan.steps.map(s => [s.id, s]));
+  const after = new Map((plan.steps ?? []).map(s => [s.id, s]));
+  for (const [id, s] of after) {
+    const b = before.get(id);
+    if (!b) out.push({ text: `adds ${KIND_LABEL[s.do] ?? s.do} ${id}` });
+    else if (JSON.stringify(b) !== JSON.stringify(s)) out.push({ text: `changes ${id}` });
+  }
+  for (const id of before.keys()) if (!after.has(id)) out.push({ text: `removes ${id}` });
+  const zb = new Set((cur.plan.zones ?? []).map(z => z.id)), za = new Set((plan.zones ?? []).map(z => z.id));
+  for (const z of za) if (!zb.has(z)) out.push({ text: `adds safe zone ${z}` });
+  for (const z of zb) if (!za.has(z)) out.push({ text: `removes safe zone ${z}`, looser: true });
+  if (cur.plan.bvlos && !plan.bvlos) out.push({ text: 'no longer requires safe zones in reach all the way (beyond line of sight off)', looser: true });
+  if ((cur.plan.onLinkLoss ?? 'continue') !== (plan.onLinkLoss ?? 'continue')) out.push({ text: `on link loss: ${cur.plan.onLinkLoss ?? 'continue'} to ${plan.onLinkLoss ?? 'continue'}`, looser: cur.plan.onLinkLoss === 'home' });
+  if (fence) {
+    const f0 = cur.fence;
+    const more = (a: number, b: number) => (a === 0 && b > 0 ? false : b === 0 && a > 0) || (a > 0 && b > a);
+    if (more(f0.maxDistM, fence.maxDistM)) out.push({ text: `distance limit ${f0.maxDistM || 'none'} m to ${fence.maxDistM || 'none'}`, looser: true });
+    if (more(f0.maxAltM, fence.maxAltM)) out.push({ text: `height limit ${f0.maxAltM || 'none'} m to ${fence.maxAltM || 'none'}`, looser: true });
+    if (fence.keepOut.length < f0.keepOut.length) out.push({ text: `${f0.keepOut.length - fence.keepOut.length} keep-out area(s) removed`, looser: true });
+    if (fenceArea(fence.polygon) > fenceArea(f0.polygon) * 1.01 || (f0.polygon.length >= 3 && fence.polygon.length < 3)) out.push({ text: 'the fence outline is bigger, or gone', looser: true });
+    if (fence.action === 'warn' && f0.action !== 'warn') out.push({ text: 'crossing the fence only warns', looser: true });
+    if (JSON.stringify(f0) !== JSON.stringify({ ...emptyFence(), ...fence }) && !out.some(c => c.looser)) out.push({ text: 'changes the fence' });
+  }
+  return out;
+}
+
+/** What the AI proposed, beside what's here: changes listed, loosening in red. A person decides. */
+function Proposal({ current, use }: { current: Draft; use: (p: PlanFile, f?: FenceData) => void }) {
+  const p = S.ops?.planProposal;
+  const anchors = anchorsNow();
+  if (!p && !anchors.length) return null;
+  const changes = p ? diff(current, p.plan, p.fence) : [];
+  const looser = changes.filter(c => c.looser);
+  return (
+    <Panel title="With the AI" right={anchors.length ? <button onClick={() => setAnchors([])}>Clear anchors</button> : null}>
+      {anchors.length > 0 && <p class="dim small" id="anchors">Marked for the AI: {anchors.map(a => a.name).join(', ')}. Ask the assistant to build around them.</p>}
+      {p && <div id="proposal">
+        <p><b>Proposed by the AI</b> <span class="dim small">{new Date(p.at).toLocaleTimeString()}</span>{p.note && <>: {p.note}</>}</p>
+        <p class={p.ok ? 'goodText small' : 'badText small'}>{p.ok ? 'It checks out on the phone.' : `${p.problems} problem(s) when checked.`} Shown dashed in purple.</p>
+        {looser.length > 0 && <ul class="problems" id="looser">{looser.map((c, i) => <li key={i}>Loosens a restriction: {c.text}</li>)}</ul>}
+        <ul class="small">{changes.filter(c => !c.looser).slice(0, 12).map((c, i) => <li key={i}>{c.text}</li>)}{changes.length > 12 && <li class="dim">and {changes.length - 12} more</li>}</ul>
+        <div class="row">
+          <button class={looser.length ? 'dangerOutline' : 'sel'} id="useProposal" onClick={() => { if (looser.length && !confirm('This proposal loosens a restriction:\n\n' + looser.map(c => '• ' + c.text).join('\n') + '\n\nUse it anyway?')) return; use(p.plan, p.fence); cmd('plan_proposal_clear', {}, { quiet: true }); }}>Use this{p.fence ? ' (and its fence)' : ''}</button>
+          <button onClick={() => cmd('plan_proposal_clear', {}, { label: 'Dismiss proposal' })}>Dismiss</button>
+        </div>
+        <p class="dim small">Nothing is sent: check it, then send it yourself.</p>
+      </div>}
+    </Panel>
+  );
+}
+
+/** What flights measured about this vehicle, and planning settings worth changing. A person applies them. */
+function Learned() {
+  const [data, setData] = useState<{ measured: { climbs: number; legs: number; glides: number }; suggestions: { param: string; current: number; suggested: number; basis: string }[] } | null>(null);
+  const load = async () => { const r = await cmd('plan_learning', {}, { quiet: true }); if (r.data) setData(r.data); };
+  if (!data) return <p><a href="#" class="small" onClick={e => { e.preventDefault(); load(); }}>What flights measured</a></p>;
+  const m = data.measured;
+  return (
+    <div class="form" id="learned">
+      <p class="dim small">Measured on plans flown: {m.climbs} climbs, {m.legs} legs, {m.glides} glides.</p>
+      {!data.suggestions.length && <p class="dim small">Nothing to change: the planning settings match what it does{m.climbs + m.legs + m.glides === 0 ? ', or there\'s nothing measured yet' : ''}.</p>}
+      {data.suggestions.map(s => (
+        <div class="row" key={s.param}>
+          <span class="grow small"><b>{s.param}</b> {s.current} → {s.suggested}<br /><span class="dim">{s.basis}</span></span>
+          {isOperator() && <button onClick={async () => { const r = await cmd('plan_learning_apply', { param: s.param }, { label: `Apply ${s.param}` }); if (r.accepted) load(); }}>Apply</button>}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 /** The fields for the selected step. */
