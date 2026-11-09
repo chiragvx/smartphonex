@@ -99,7 +99,8 @@ sealed class Command {
 /** seq/sentAt are null for commands that originate on this device or in the MCP request itself. */
 data class Envelope(val source: Source, val seq: Long?, val sentAtMs: Long?, val command: Command)
 
-data class CommandResult(val accepted: Boolean, val code: String, val message: String = "") {
+/** [data] is an answer for commands that ask something, such as a plan check. */
+data class CommandResult(val accepted: Boolean, val code: String, val message: String = "", val data: kotlinx.serialization.json.JsonObject? = null) {
     companion object {
         val OK = CommandResult(true, "ok")
         fun reject(code: String, message: String) = CommandResult(false, code, message)

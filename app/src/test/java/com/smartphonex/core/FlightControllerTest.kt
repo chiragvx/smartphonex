@@ -316,7 +316,9 @@ class FlightControllerTest {
         fc.setHomeHere()
         fc.setMode(FlightMode.RETURN_HOME)
         feed(0.0, 0.0, 0.0, 11.0)
-        assertEquals(FlightMode.STABILIZE, fc.mode)
+        assertEquals("a plane circles under its own power: on link loss the controller's throttle is zero", FlightMode.HOLD, fc.mode)
+        val out = step(ActuatorOutput(0.0, 0.0))
+        assertEquals(params.get("RTH_THROTTLE", "plane"), out.throttle, 1e-9)
     }
 
     @Test fun lostGyroDropsToManualAndAsksForFailsafe() {

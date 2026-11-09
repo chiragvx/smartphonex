@@ -60,7 +60,7 @@ let videoWs: WebSocket | null = null;
 let wantVideo = false;
 let lastSeq = 0;
 let retry: any = null;
-const waiting = new Map<number, { resolve: (r: { accepted: boolean; message: string; code: string }) => void; label: string; quiet: boolean; timer: any }>();
+const waiting = new Map<number, { resolve: (r: { accepted: boolean; message: string; code: string; data?: any }) => void; label: string; quiet: boolean; timer: any }>();
 let toastSeq = 0;
 
 export const getToken = () => token;
@@ -107,7 +107,7 @@ function nextSeq() { lastSeq = Math.max(lastSeq + 1, Date.now() * 1000); return 
 export function cmd(name: string, args: Record<string, unknown> = {}, opts: { label?: string; quiet?: boolean } = {}) {
   const seq = nextSeq();
   raw({ type: 'cmd', seq, sentAt: Date.now() + S.offset, cmd: name, ...args });
-  return new Promise<{ accepted: boolean; message: string; code: string }>(resolve => {
+  return new Promise<{ accepted: boolean; message: string; code: string; data?: any }>(resolve => {
     const label = opts.label ?? name.replace(/_/g, ' ');
     const quiet = !!opts.quiet;
     const timer = setTimeout(() => {
@@ -197,7 +197,7 @@ function onMessage(m: any) {
       waiting.delete(m.seq);
       clearTimeout(w.timer);
       if (!w.quiet) addToast(w.label, m.accepted ? 'ok' : 'refused', m.message, m.seq);
-      w.resolve({ accepted: m.accepted, message: m.message, code: m.code });
+      w.resolve({ accepted: m.accepted, message: m.message, code: m.code, data: m.data });
       break;
     }
   }

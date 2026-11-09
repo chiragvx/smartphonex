@@ -223,6 +223,20 @@ object Geo {
         }
     }
 
+    /**
+     * Whether the straight leg between two points crosses the fence or a keep-out area. Exact: a leg that clips a
+     * small area between sample points is still caught. Distance from home is largest at an end, so the points cover it.
+     */
+    fun legBreach(f: Fence, a: MissionItem, b: MissionItem): String? {
+        val fr = LocalFrame(a.lat, a.lon)
+        val pa = fr.xy(a.lat, a.lon); val pb = fr.xy(b.lat, b.lon)
+        if (f.polygon.size >= 3 && PlanGeo.edgeDist(pa, pb, f.polygon.map { fr.xy(it) }) == 0.0) return "outside the fence"
+        f.keepOut.forEachIndexed { i, k ->
+            if (k.size >= 3 && PlanGeo.edgeDist(pa, pb, k.map { fr.xy(it) }) == 0.0) return "inside keep-out area ${i + 1}"
+        }
+        return null
+    }
+
     /** Everything wrong with a mission. These block it from running. */
     fun validate(m: Mission, f: Fence, home: GpsFix?, triggers: Set<String>, maxThrottle: Double): List<String> {
         val e = ArrayList<String>()
@@ -233,15 +247,7 @@ object Geo {
             if (p.holdS !in 0.0..3600.0) e += "$n: hold must be 0 to 3600 s"
             p.throttle?.let { if (abs(it) > maxThrottle) e += "$n: throttle is over this vehicle's limit of $maxThrottle" }
             p.triggers.filter { it !in triggers }.forEach { e += "$n: unknown trigger $it" }
-            if (i > 0) {
-                val q = m.items[i - 1]
-                for (s in 1..9) {
-                    val la = q.lat + (p.lat - q.lat) * s / 10
-                    val lo = q.lon + (p.lon - q.lon) * s / 10
-                    val r = Geo.breach(f, la, lo, null, home)
-                    if (r != null) { e += "The leg to point ${i + 1} goes $r"; break }
-                }
-            }
+            if (i > 0) legBreach(f, m.items[i - 1], p)?.let { e += "The leg to point ${i + 1} goes $it" }
         }
         return e
     }
@@ -632,6 +638,11 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
                 rt.log.event("mission", source.name, "uploaded", "${m.name}: ${m.items.size} points")
                 CommandResult.OK
             }
+            "plan_check" -> {
+                val plan = a["plan"] as? JsonObject ?: return no("malformed", "plan is required")
+                val r = checkPlan(plan, p)
+                CommandResult(true, if (r.ok) "ok" else "problems", if (r.ok) "plan checks out" else "${r.problems.size} problem(s): ${r.problems.first().text}", r.json)
+            }
             "mission_start" -> missionStart(source, p)
             "mission_pause" -> {
                 if (missions.state != MissionEngine.State.RUNNING) return no("not_permitted", "no mission is running")
@@ -890,6 +901,11 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         }
     }
 
+    /** Compiles a plan for this vehicle, here, against its fence and triggers. Changes nothing. */
+    fun checkPlan(plan: JsonObject, p: VehicleProfile = rt.profiles.active) = PlanCompiler.compile(plan, PlanContext(
+        PlanPerf.from(rt.params, p.vehicleType), rt.fc.homeNow, fence, triggerMap().mapValues { it.value.danger },
+    ))
+
     fun validateMission(m: Mission) = Geo.validate(m, fence, rt.fc.homeNow, triggerIds(), rt.profiles.active.maxThrottle)
 
     /** A person approved a mission that an AI proposed. */
@@ -1055,6 +1071,6 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         const val WEAK_SIGNAL = 30.0
         const val MAX_PHOTOS = 500
         const val MAX_LOG_ROWS = 20_000
-        val AI_ALLOWED = setOf("trigger_fire", "mission_upload", "mission_pause", "mission_abort", "face_express", "face_show")
+        val AI_ALLOWED = setOf("plan_check", "trigger_fire", "mission_upload", "mission_pause", "mission_abort", "face_express", "face_show")
     }
 }

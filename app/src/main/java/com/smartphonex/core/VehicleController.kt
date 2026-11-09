@@ -448,6 +448,19 @@ class VehicleController(
         log.event(if (drillRunning) "test" else "failsafe", "controller", "activated", reason)
     }
 
+    /**
+     * A failsafe the phone decided on, not a person's STOP. A flying plane is flown home or circled instead: cutting its
+     * motor would drop it wherever it is. The autopilot flies it in AUTO, and the AI stays locked out.
+     */
+    private fun automaticFailsafe(reason: String) {
+        if (fcActive && fc!!.keepFlying(reason)) {
+            if (mode != Mode.AUTO) enterMode(Mode.AUTO, "$reason: plane kept flying")
+            aiLocked = true
+            return
+        }
+        failsafe(reason)
+    }
+
     /** Armed only: drive measured speed to zero, then release the output so the car doesn't creep. */
     private fun brake(speed: Double, p: VehicleProfile): Double =
         if (abs(speed) < 0.05) 0.0 else (-speed).coerceIn(-p.maxThrottle, p.maxThrottle)
@@ -462,10 +475,10 @@ class VehicleController(
                 aiLocked = true
                 enterMode(Mode.AUTO, "link lost, returning home")
             } else {
-                failsafe("manual command link lost")
+                automaticFailsafe("manual command link lost")
             }
         }
-        if (fcActive) fc!!.takeFailsafeRequest()?.let { if (mode == Mode.MANUAL || mode == Mode.AUTO) failsafe(it) }
+        if (fcActive) fc!!.takeFailsafeRequest()?.let { if (mode == Mode.MANUAL || mode == Mode.AUTO) automaticFailsafe(it) }
 
         val speed = sensors.speedMps ?: 0.0
         var target: Double? = null
@@ -537,7 +550,7 @@ class VehicleController(
 
         if (sensors.collided && !wasCollided) {
             log.event("collision", "vehicle", "collided", "contact while in $mode")
-            if (mode == Mode.MANUAL || mode == Mode.AUTO) failsafe("collision")
+            if (mode == Mode.MANUAL || mode == Mode.AUTO) automaticFailsafe("collision")
         }
         wasCollided = sensors.collided
         snapshot(now)

@@ -402,6 +402,22 @@ class FlightController(
     fun requestFailsafe(why: String) = synchronized(lock) { failsafeRequest = why }
     /** A safety system changing mode: not subject to the usual checks. */
     fun force(m: FlightMode, why: String) = synchronized(lock) { enterMode(m, why) }
+
+    /**
+     * A plane in the air can't stop. An automatic failsafe would cut its motor and drop the controls, so instead it
+     * flies home, or circles where it is when it can't navigate. False when that doesn't apply (not a plane, not
+     * flying, or no gyroscope to fly with), and the normal failsafe goes ahead. A person's STOP never comes here.
+     */
+    fun keepFlying(why: String): Boolean = synchronized(lock) {
+        if (!isPlane() || why == GYRO_STOPPED) return false
+        updateFlying(nowMs())
+        val flying = flyingWhy ?: return false
+        val m = if (modeProblem(FlightMode.RETURN_HOME) == null) FlightMode.RETURN_HOME else FlightMode.HOLD
+        log.event("failsafe", "phone", "airborne", "$why while flying ($flying): " +
+            (if (m == FlightMode.RETURN_HOME) "returning home" else "circling here, it can't navigate") + " instead of cutting the motor")
+        enterMode(m, why)
+        true
+    }
     fun setModeForce(m: FlightMode) = synchronized(lock) { enterMode(m, "requested") }
     val homeNow: GpsFix? get() = synchronized(lock) { home }
     val batteryNow: Double? get() = synchronized(lock) { batteryPct }
@@ -744,7 +760,7 @@ class FlightController(
     private fun monitor(now: Long, armed: Boolean) {
         if (mode != FlightMode.MANUAL && now - lastGyroWallMs > SENSOR_STALE_MS) {
             enterMode(FlightMode.MANUAL, "gyroscope stopped")
-            if (armed) failsafeRequest = "gyroscope stopped"
+            if (armed) failsafeRequest = GYRO_STOPPED
         }
         val navHealth = gpsGuard.estimate(now)?.health
         if (navHealth != lastNavHealth) {
@@ -759,8 +775,9 @@ class FlightController(
             enterMode(FlightMode.HOLD, "GPS lost")
         }
         if (mode == FlightMode.RETURN_HOME && gpsLost) {
-            // Without a position there's no way home: hold what we can, and the pilot must take over.
-            enterMode(if (isPlane()) FlightMode.STABILIZE else FlightMode.MANUAL, "GPS lost")
+            // Without a position there's no way home. A plane circles under power (STABILIZE would take its throttle from
+            // the controller, which is zero when the link is lost); anything else stops, and the pilot must take over.
+            enterMode(if (isPlane()) FlightMode.HOLD else FlightMode.MANUAL, "GPS lost")
             if (armed && !isPlane()) failsafeRequest = "GPS lost during return home"
         }
         val hot = thermal >= p("FS_THERMAL")
@@ -988,6 +1005,7 @@ class FlightController(
     companion object {
         const val LOG_HEADER = "t,mode,roll,pitch,yaw,rollRate,pitchRate,yawRate,targetRoll,targetPitch,targetHeading,throttle,steering,pitchOut,rollOut,lat,lon,alt,gpsAcc"
         private const val SENSOR_STALE_MS = 500L
+        private const val GYRO_STOPPED = "gyroscope stopped"
         private const val GPS_STALE_MS = 5000L
         private const val GPS_LOST_MS = 10000L
         private const val STALL_MS = 50.0

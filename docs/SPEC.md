@@ -92,7 +92,7 @@ Tested only in software, or with stand-ins:
 
 The phone also sends `ops` twice a second: `readiness`, `armProblem`, `flightMode`, `owner`, `killed`, `mission`, `fence`, `triggers`, `trims`, `checklist`, `connections`, `caps`, `diag`, `report` and `ground`. Viewers don't get `missionData` or the fence's shape. Each entry in `readiness` and `connections` is `{id, label, status, detail, fix}`.
 
-New `cmd` values, each answered by the usual `ack`:
+New `cmd` values, each answered by the usual `ack`. An `ack` for a command that asks something carries the answer in `data`:
 
 | Command | Arguments |
 |---|---|
@@ -110,6 +110,7 @@ New `cmd` values, each answered by the usual `ack`:
 | `mission_upload` | `mission`: `name`, `onEnd`, `onLinkLoss`, `items[]` of `lat`, `lon`, `alt`, `throttle`, `holdS`, `radiusM`, `triggers[]` |
 | `mission_start`, `mission_pause`, `mission_resume`, `mission_skip`, `mission_abort` | none |
 | `goto` | `lat`, `lon` |
+| `plan_check` | `plan`: a plan file, `smartphonex.plan/1` (see `docs/PLANNING.md`). Changes nothing. Accepted with `code` `ok` or `problems`, and the compiled plan in the ack's `data`: `ok`, `problems[]`, `warnings[]`, `hash`, `summary`, `assumptions`, `timeline[]`, `gaps[]`, `zones[]`, `points[]`, `path[]`, `misses`, and `plan` with every step's id filled in. AI may use it |
 | `fence_set` | `fence`: `polygon`, `keepOut`, `maxDistM`, `maxAltM`, `action` |
 | `home_set` | none |
 | `pose_capture` | `skill`, `steps`, `loops` |

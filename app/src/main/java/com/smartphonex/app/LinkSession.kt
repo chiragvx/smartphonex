@@ -248,6 +248,7 @@ class LinkSession(
     private fun ack(seq: JsonElement?, r: CommandResult, cmd: String?, recvAt: Long, procUs: Long) = buildJsonObject {
         put("type", "ack"); put("seq", seq ?: JsonNull); put("cmd", cmd)
         put("accepted", r.accepted); put("code", r.code); put("message", r.message)
+        r.data?.let { put("data", it) }
         put("t", System.currentTimeMillis()); put("recvAt", recvAt); put("procUs", procUs)
     }.toString()
 

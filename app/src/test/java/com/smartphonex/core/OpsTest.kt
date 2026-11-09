@@ -380,6 +380,53 @@ class OpsRuntimeTest {
         assertTrue(rt.log.allEvents().any { it.kind == "failsafe" && it.code == "fence" })
     }
 
+    @Test fun aPlanIsCheckedOnThePhoneAndTheAnswerComesBack() {
+        gps()
+        assertNull(rt.fc.setHomeHere())
+        assertTrue(ops("fence_set") { put("fence", buildJsonObject { put("maxDistM", 300.0); put("action", "hold") }) }.accepted)
+        fun plan(north: Double) = buildJsonObject {
+            put("format", PlanCompiler.FORMAT)
+            putJsonArray("steps") {
+                addJsonObject { put("do", "goto"); put("at", buildJsonArray { add(north(north)); add(LON) }); putJsonArray("actions") { addJsonObject { put("do", "trigger"); put("id", "photo") } } }
+                addJsonObject { put("do", "home") }
+            }
+        }
+        val good = ops("plan_check") { put("plan", plan(100.0)) }
+        assertTrue(good.accepted)
+        assertEquals(true, good.data!!["ok"]!!.jsonPrimitive.boolean)
+        assertTrue(good.data!!["timeline"]!!.jsonArray.any { "trigger photo" in it.jsonObject["text"].toString() })
+        val far = ops("plan_check") { put("plan", plan(400.0)) }
+        assertTrue("checking worked, the plan didn't", far.accepted)
+        assertEquals("problems", far.code)
+        assertTrue(far.message, "from home" in far.message)
+        assertTrue("the AI may check plans", ops("plan_check", Source.AI) { put("plan", plan(100.0)) }.accepted)
+        assertNull("checking changes nothing", rt.ops.missions.mission)
+    }
+
+    @Test fun aFlyingPlaneThatHitsAStopFenceFliesHomeInsteadOfCuttingTheMotor() {
+        rt.profiles.select("plane")
+        assertTrue(ops("fence_set") { put("fence", buildJsonObject { put("maxDistM", 20.0); put("action", "stop") }) }.accepted)
+        gps()
+        assertNull(rt.fc.setHomeHere())
+        assertTrue(cmd(Command.SetMode(Mode.MANUAL)).accepted)
+        // Flying north at 15 m/s, out through the fence.
+        rt.fc.gpsGuard.reset()
+        repeat(GpsGuard.SETTLE_FIXES + 2) { rt.fc.onGps(GpsFix(north(40.0), LON, 230.0, 15.0, 0.0, 3.0, 10, System.currentTimeMillis()), null) }
+        assertNotNull(rt.fc.flyingReason())
+        cmd(Command.Drive(0.6, 0.0))
+        rt.ops.tick(rt.controller.tick(0.01))
+        rt.ops.tick(rt.controller.tick(0.01))
+        assertEquals("still armed, flown by the autopilot", Mode.AUTO, mode)
+        assertEquals(FlightMode.RETURN_HOME, rt.fc.mode)
+        assertTrue(rt.log.allEvents().any { it.kind == "failsafe" && it.code == "airborne" })
+        val motor = rt.controller.latest().outputs.first { it.name == "Motor" }
+        assertTrue("the motor keeps running: ${motor.value}", motor.value > 0.1)
+
+        // A person's STOP still cuts it: that's the deliberate kill.
+        assertTrue(cmd(Command.Kill).accepted)
+        assertEquals(Mode.FAILSAFE, mode)
+    }
+
     @Test fun missionWontStartWhenItsRadiusIsTighterThanTheGps() {
         gps()
         ops("mission_upload") { put("mission", buildJsonObject { putJsonArray("items") { addJsonObject { put("lat", north(50.0)); put("lon", LON); put("radiusM", 1.0) } } }) }
