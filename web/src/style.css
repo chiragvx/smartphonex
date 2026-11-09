@@ -224,3 +224,10 @@ details.panel.fold .stats { margin-bottom: 0; }
 :root[data-theme=sun] .tabs button.sel { color: #000; background: var(--raise); }
 :root[data-theme=sun] .onmap, :root[data-theme=sun] .onmap.dim, :root[data-theme=sun] .videoInfo, :root[data-theme=sun] .view3dBar, :root[data-theme=sun] .view3dNote { color: #fff; }
 :root[data-theme=sun] .thumb { color: #fff; }
+
+/* Ground test steps. */
+.gstage { display: flex; gap: 8px; padding: 7px 6px; border-radius: 6px; align-items: flex-start; }
+.gstage + .gstage { border-top: 1px solid var(--line); }
+.gstage.next { background: var(--raise); }
+.gstage.skip { opacity: .6; }
+.gstage .row { margin: 6px 0 0; }

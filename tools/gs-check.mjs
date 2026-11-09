@@ -168,7 +168,7 @@ check('Automatic tests produce a report', await until(async () => (await has('#r
 const stopLine = await js(`[...document.querySelectorAll('#report .check')].map(x => x.innerText).join(' | ')`);
 console.log('      report:', stopLine.replace(/\n/g, ' '));
 check('Stop test measured', /Outputs safe in \d+ ms/.test(stopLine));
-check('Failsafe test measured', /Reacted in \d+ ms/.test(stopLine));
+check('Failsafe test measured', /\d+ ms after the \d+ ms link timeout/.test(stopLine));
 check('A test raises no false alarm', !/link lost/.test(await js(`document.querySelector('.banners').innerText`)), await js(`document.querySelector('.banners').innerText`));
 check('Tests leave it disarmed', (await arm()) === 'Disarmed', await arm());
 await click('#linkTest');
@@ -425,6 +425,44 @@ await sleep(300);
 check('Test fits at phone width', await js(`document.documentElement.scrollWidth <= innerWidth + 1`));
 await shot('phone-test');
 await cdp('Emulation.clearDeviceMetricsOverride');
+
+// Ground test: the parts that can be shown indoors. Results are cleared before and after, so the check's own STOP
+// isn't left looking like a person's ground test.
+await selectDevice('car');
+await page('test');
+check('Ground test is listed', await until(async () => (await js(`document.querySelectorAll('#groundStages [data-stage]').length`)) === 7), await js(`document.querySelectorAll('#groundStages [data-stage]').length`));
+await js(`document.querySelector('#groundTest details summary').click()`);
+await clickButton('Clear the results');
+await until(async () => /^0 of/.test(await text('#groundTestScore')));
+await click('#outputsRight');
+check('Outputs can only be confirmed after each was run', await until(async () => /run each output each way first/.test(await text('#toasts'))), (await text('#toasts')).slice(-120));
+await page('operate');
+await slide();
+const armedForStop = await until(async () => (await arm()) === 'ARMED');
+if (armedForStop) {
+  await click('#stop');
+  await page('test');
+  check('A STOP while armed is recorded', await until(async () => js(`!!document.querySelector('[data-stage=stop] .mark.good')`)), await text('[data-stage=stop]'));
+} else console.log(`SKIP  Ground test STOP: it didn't arm (${await arm()})`);
+await page('test');
+await click('[data-how=drive]');
+check('Driving asks for a moving stop too', await until(async () => js(`!document.querySelector('[data-stage=stop-moving]').classList.contains('skip')`)));
+await click('[data-how=walk]');
+await until(async () => js(`document.querySelector('[data-stage=stop-moving]').classList.contains('skip')`));
+await click('#makeTestPlan');
+await sleep(800);
+if (await has('#groundTestMsg')) console.log(`SKIP  Ground test plan: ${(await text('#groundTestMsg')).slice(0, 120)}`);
+else {
+  check('A ground test plan opens in Plan', await until(async () => /corner-4/.test(await text('#steps'))), (await text('#steps')).slice(0, 120));
+  check('It checks out on the phone', await until(async () => /Checks out/.test(await text('#checkState')), 8000), await text('#checkState'));
+  await shot('ground-test-plan');
+  await clickButton('Undo');
+}
+await page('test');
+await shot('ground-test');
+await js(`document.querySelector('#groundTest details').open = true`);
+await clickButton('Clear the results');
+check('Ground test results cleared', await until(async () => /^0 of/.test(await text('#groundTestScore'))), await text('#groundTestScore'));
 
 await cdp('Page.navigate', { url: `${base}/classic/` });
 await sleep(2500);

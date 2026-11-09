@@ -74,6 +74,27 @@ Hardware tests are only reachable while disarmed and in an explicit **Test mode*
 
 Each session produces a saved, dated **test report** that's attached to the device and viewable in Review.
 
+### Ground test
+
+The first thing on Test, on the ground station and on the phone's own Test tab: what the vehicle has been *seen* to do, measured by the phone, kept per vehicle across restarts (`GroundTest.kt`). Only one step takes a person's word, and only after the phone has seen the thing happen.
+
+| Step | Passes when |
+|---|---|
+| Phone self-test | The automatic tests passed for this vehicle (a warning after a day) |
+| Link | The link test passed |
+| Each output moves the right way | Every output was run each way it can go (forward only for a one-way motor), then a person said they moved the right way |
+| STOP disarms it | STOP arrived while armed |
+| It follows a plan | A plan of three or more points ran to the end: every point reached, off the line by no more than 10 m walking or the arrival radius driving (at least 5 m), with its timing |
+| The fence catches it | Armed, it left the fence and the phone did the fence's action (a fence that only warns is a warning) |
+| It stops when moving | Driving only: STOP at 1 m/s or more, and GPS speed fell below 0.4 m/s within 3 s. Time and distance are shown |
+
+Two ways to do the route and fence:
+
+- **Walk it:** carry the phone round the plan, armed on a ground or water profile, with nothing connected that can move. It proves navigation, arrivals, timing, triggers and the fence on real GPS, with nothing that can run away.
+- **Drive it:** the vehicle steers itself round the plan, slowly, with someone ready on STOP. Not yet tried on real hardware.
+
+**Make a test plan here** draws a square round the phone's position: 20 m a side walking (30 m driving), or larger when GPS is rough, an arrival radius from the GPS accuracy, and a fence 12 m (20 m) outside it set to hold. It opens in Plan to look at, move and send in the usual way.
+
 ## 5. Arming
 
 | Part | Behavior |

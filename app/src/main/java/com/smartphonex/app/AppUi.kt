@@ -476,7 +476,8 @@ private fun SlideToArm(onArm: () -> Unit) {
                         x = (x + drag.x).coerceIn(0f, (width - thumbPx).coerceAtLeast(0f))
                     }
                 },
-        )
+            contentAlignment = Alignment.Center,
+        ) { Text("→", color = Color.Black, fontSize = 28.sp, fontWeight = FontWeight.Bold) }
     }
 }
 
@@ -695,6 +696,7 @@ private fun TestTab(rt: VehicleRuntime, f: Frame) {
     val slow = f.slow ?: return
     // Leaving this page ends any test, whatever was happening.
     DisposableEffect(Unit) { onDispose { rt.ask("test_stop") } }
+    GroundTestCard(rt)
     Card("Ready to arm?") {
         slow.readiness.forEach { StatusRow(it.label, it.status, it.detail, it.fix) }
     }
@@ -723,6 +725,37 @@ private fun TestTab(rt: VehicleRuntime, f: Frame) {
         }
     }
     OutputTests(rt, f)
+}
+
+/** The ground test, as the phone has measured it. The route's plan is made from a ground station's Test page. */
+@Composable
+private fun GroundTestCard(rt: VehicleRuntime) {
+    val ctx = LocalContext.current
+    val gt = rt.ops.groundTestJson()
+    val how = gt["how"]!!.jsonPrimitive.content
+    Card("Ground test: ${gt["passed"]!!.jsonPrimitive.int} of ${gt["needed"]!!.jsonPrimitive.int}") {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FilterChip(selected = how == "walk", onClick = { ctx.say(rt.ask("ground_test_how") { put("how", "walk") }) }, label = { Text("Walk it") })
+            FilterChip(selected = how == "drive", onClick = { ctx.say(rt.ask("ground_test_how") { put("how", "drive") }) }, label = { Text("Drive it") })
+        }
+        val stages = gt["stages"]!!.jsonArray.map { it.jsonObject }
+        val next = stages.firstOrNull { it["status"]!!.jsonPrimitive.content.let { s -> s == "todo" || s == "fail" } }
+        stages.forEach { st ->
+            val status = st["status"]!!.jsonPrimitive.content
+            val detail = st["detail"]!!.jsonPrimitive.content
+            StatusRow(st["label"]!!.jsonPrimitive.content, when (status) { "pass" -> "ok"; "todo", "skip" -> "none"; else -> status }, detail,
+                if (st === next || status == "fail") st["how"]!!.jsonPrimitive.content else "")
+            if (st["id"]!!.jsonPrimitive.content == "outputs" && status != "pass") Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedButton(onClick = { ctx.say(rt.ask("ground_test_confirm") { put("ok", true) }, "Recorded") }) { Text("Moved the right way") }
+                OutlinedButton(onClick = { ctx.say(rt.ask("ground_test_confirm") { put("ok", false) }, "Recorded") }) { Text("Wrong way", color = Bad) }
+            }
+        }
+        (gt["route"] as? JsonObject)?.let { r ->
+            Text("Running: ${r["reached"]!!.jsonPrimitive.int} of ${r["of"]!!.jsonPrimitive.int} points, off the line by up to ${r["maxOffM"]!!.jsonPrimitive.double} m", color = Warn, fontWeight = FontWeight.Bold)
+        }
+        if (gt["done"]!!.jsonPrimitive.boolean) Text("Ground test passed. Keep the first real runs short, slow and in sight.", color = Good, fontWeight = FontWeight.Bold)
+        else Text("Make the route's test plan from a ground station: Test, Ground test, Make a test plan here.", fontSize = 12.sp)
+    }
 }
 
 @Composable

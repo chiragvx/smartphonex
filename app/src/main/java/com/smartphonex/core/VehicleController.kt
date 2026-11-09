@@ -102,7 +102,7 @@ class VehicleController(
         }
         val limit = profiles.active.commandTimeoutMs
         val t = took ?: return null to "No reaction within 3 s"
-        return t to "Reacted in $t ms (limit ${limit} ms), going to $ended"
+        return t to "Went to $ended ${(t - limit).coerceAtLeast(0)} ms after the ${limit} ms link timeout ($t ms in all)"
     }
     interface DeviceHooks {
         fun armProblem(): String?
@@ -290,6 +290,7 @@ class VehicleController(
 
     private fun applyStop(source: Source): CommandResult {
         // A failsafe is already stopped, and stays latched until a human explicitly re-arms.
+        ops()?.stopEvidence(source, mode == Mode.MANUAL || mode == Mode.AUTO)
         if (mode != Mode.FAILSAFE) enterMode(Mode.DISARMED, "stop from $source")
         ops()?.missions?.abort()
         // The AI cannot undo a human's stop.

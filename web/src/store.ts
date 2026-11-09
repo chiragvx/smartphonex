@@ -25,8 +25,13 @@ export type Ops = {
   report?: Report; checklist: { item: string; done: boolean }[];
   trims: Record<string, { trim: number; reverse: boolean; lo: number; hi: number }>;
   connections: Check[];
+  groundTest?: GroundTestJson;
   face?: { shown: boolean; mode: string; requested: string | null; held: boolean; blocked?: string };
 };
+export type GroundStage = { id: string; label: string; how: string; status: 'pass' | 'fail' | 'warn' | 'todo' | 'skip'; detail: string; at?: number; ranAs?: string };
+export type GroundTestJson = { how: 'walk' | 'drive'; stages: GroundStage[]; passed: number; needed: number; done: boolean; route?: { name: string; reached: number; of: number; maxOffM: number } };
+/** Switches workspace; set by the app shell. */
+export const nav = { go: (_page: string) => {} };
 export type Report = { t: number; device: string; name: string; passed: boolean; results: { test: string; status: string; detail: string }[] };
 export type LogEvent = { id?: number; t: number; kind: string; source: string; code: string; message: string };
 export type Alert = { id: number; level: 'info' | 'warning' | 'critical'; text: string; t: number };

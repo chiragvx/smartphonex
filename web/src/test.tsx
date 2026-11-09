@@ -1,8 +1,9 @@
 // Prove it's ready. The phone runs the checks and keeps the reports. Leaving this page ends any test.
 import { useEffect, useState } from 'preact/hooks';
-import { armed, cmd, isOperator, onPong, ping, S } from './store';
+import { armed, cmd, isOperator, nav, onPong, ping, S, type GroundStage } from './store';
 import { CheckRow, HoldToRun, Panel } from './parts';
 import { fetchFiles } from './review';
+import { openDraft } from './plan';
 
 function Checklist() {
   const list = S.ops?.checklist ?? [];
@@ -13,6 +14,85 @@ function Checklist() {
           <label class="tick" key={c.item}><input type="checkbox" checked={c.done} disabled={!isOperator()} onChange={e => cmd('checklist_set', { item: c.item, done: e.currentTarget.checked }, { quiet: true })} />{c.item}</label>
         ))}
       </div>
+    </Panel>
+  );
+}
+
+/** A small square round where the phone is now, with a fence a little outside it, to walk or drive. */
+export function groundTestPlan(how: 'walk' | 'drive'): { plan: any; fence: any } | string {
+  const gps = S.fcs?.gps;
+  const g = gps?.nav;
+  if (!gps) return 'No position yet. Go outside, with Location on, and wait for GPS.';
+  if (g && g.health !== 'good') return `GPS isn't good enough yet (±${Math.round(g.radius)} m, ${g.health}). Wait a minute in the open.`;
+  const lat = g?.lat ?? gps.lat, lon = g?.lon ?? gps.lon;
+  const radius = Math.max(5, Math.ceil((g?.radius ?? gps.acc) * 1.3) + 1);
+  const side = how === 'walk' ? Math.max(20, 3 * radius) : Math.max(30, 4 * radius);
+  const margin = how === 'walk' ? 12 : 20;
+  const m = 111320, k = m * Math.cos(lat * Math.PI / 180);
+  const at = (n: number, e: number): [number, number] => [+(lat + n / m).toFixed(7), +(lon + e / k).toFixed(7)];
+  const corners = [at(side, 0), at(side, side), at(0, side), at(0, 0)];
+  return {
+    plan: {
+      format: 'smartphonex.plan/1', name: how === 'walk' ? 'Ground test, walked' : 'Ground test, driven',
+      defaults: { speed: how === 'walk' ? 1.2 : 2, radius }, onEnd: 'hold', onLinkLoss: 'hold', zones: [],
+      steps: corners.map((c, i) => ({ id: `corner-${i + 1}`, do: 'goto', at: c })),
+    },
+    fence: { polygon: [at(-margin, -margin), at(side + margin, -margin), at(side + margin, side + margin), at(-margin, side + margin)], keepOut: [], maxDistM: 0, maxAltM: 0, action: 'hold', outerM: 0 },
+  };
+}
+
+const MARK: Record<string, string> = { pass: '✓', warn: '!', fail: '✕', todo: '', skip: '–' };
+
+/** Ground test: what the vehicle has been seen to do, gathered by the phone. Each step says how to do it. */
+function GroundTestPanel() {
+  const gt = S.ops?.groundTest;
+  const [msg, setMsg] = useState('');
+  if (!gt) return null;
+  const plane = S.hello?.caps?.vehicleType === 'plane';
+  const next = gt.stages.find(s => s.status === 'todo' || s.status === 'fail');
+  const make = () => {
+    const r = groundTestPlan(gt.how);
+    if (typeof r === 'string') { setMsg(r); return; }
+    setMsg('');
+    openDraft(r.plan, r.fence);
+    nav.go('plan');
+  };
+  const row = (s: GroundStage) => (
+    <div key={s.id} class={`gstage ${s.status} ${s === next ? 'next' : ''}`} data-stage={s.id}>
+      <span class={`mark ${s.status === 'pass' ? 'good' : s.status === 'warn' ? 'warn' : s.status === 'fail' ? 'bad' : 'off'}`}>{MARK[s.status]}</span>
+      <div class="grow">
+        <b>{s.label}</b>{s.ranAs && <span class="dim small"> · {s.ranAs === 'walk' ? 'walked' : 'driven'}</span>}
+        {s.detail && <div class={s.status === 'fail' ? 'badText' : 'dim'}>{s.detail}</div>}
+        {(s.status === 'todo' || s.status === 'fail' || s === next) && <div class="fix">{s.how}</div>}
+        {s.id === 'outputs' && isOperator() && s.status !== 'pass' && <div class="row">
+          <button id="outputsRight" onClick={() => cmd('ground_test_confirm', { ok: true }, { label: 'Outputs move the right way' })}>They all moved the right way</button>
+          <button class="dangerOutline" onClick={() => cmd('ground_test_confirm', { ok: false }, { label: 'An output moved the wrong way' })}>One moved the wrong way</button>
+        </div>}
+        {s.id === 'route' && s.status !== 'pass' && isOperator() && !plane && <div class="row">
+          <button id="makeTestPlan" onClick={make}>Make a test plan here</button>
+        </div>}
+        {s.id === 'route' && gt.route && <div class="warnText" id="routeLive">Running {gt.route.name}: {gt.route.reached} of {gt.route.of} points, off the line by up to {gt.route.maxOffM} m</div>}
+      </div>
+    </div>
+  );
+  return (
+    <Panel title="Ground test" id="groundTest" right={<span class={`pill ${gt.done ? 'good' : 'off'}`} id="groundTestScore">{gt.passed} of {gt.needed}</span>}>
+      <p class="dim">What the vehicle has been seen to do, measured by the phone. Do them in order, outdoors for the last ones.</p>
+      {isOperator() && <div class="row">
+        <span class="dim">How:</span>
+        <button data-how="walk" class={gt.how === 'walk' ? 'sel' : ''} onClick={() => cmd('ground_test_how', { how: 'walk' }, { quiet: true })}>Walk it</button>
+        <button data-how="drive" class={gt.how === 'drive' ? 'sel' : ''} onClick={() => cmd('ground_test_how', { how: 'drive' }, { quiet: true })}>Drive it</button>
+      </div>}
+      <p class="dim small">{gt.how === 'walk'
+        ? 'Walk it: carry the phone round the plan, armed, with nothing connected that can move. It proves navigation, arrivals, timing and the fence on real GPS.'
+        : 'Drive it: the vehicle steers itself round the plan, slowly, with you ready on STOP. Start with walking.'}</p>
+      {plane && <p class="warnText small">For a plane, do the first four here; the route and fence need a ground or water profile (or Walk it on a car profile), and flight paths are tried on the simulated plane.</p>}
+      {msg && <p class="badText" id="groundTestMsg">{msg}</p>}
+      <div id="groundStages">{gt.stages.map(row)}</div>
+      {gt.done && <p class="goodText"><b>Ground test passed.</b> Keep the first real runs short, slow and in sight.</p>}
+      {isOperator() && <details><summary class="dim">Start again</summary>
+        <button onClick={() => { if (confirm("Clear this vehicle's ground test results?")) cmd('ground_test_reset', {}, { label: 'Ground test cleared' }); }}>Clear the results</button>
+      </details>}
     </Panel>
   );
 }
@@ -163,6 +243,7 @@ export function TestPage() {
   return (
     <div class="pageCols">
       <div>
+        <GroundTestPanel />
         <Panel title="Ready to arm?"><div id="readiness">{ready.map(c => <CheckRow key={c.id} c={c} />)}</div></Panel>
         <Checklist />
         <SensorPlausibility />

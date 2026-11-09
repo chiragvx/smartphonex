@@ -9,6 +9,7 @@ private val OPS_COMMANDS = setOf(
     "trigger_save", "trigger_delete", "trigger_prepare", "trigger_fire", "mission_upload", "mission_start",
     "mission_pause", "mission_resume", "mission_skip", "mission_abort", "goto", "fence_set", "home_set", "pose_capture",
     "face_express", "face_show", "ground_run", "ground_run_stop", "ground_run_forget", "plan_check", "plan_upload", "plan_save", "plan_list", "plan_load", "plan_delete", "sim_set", "mission_clear", "plan_export_qgc", "plan_import_qgc", "plan_learning", "plan_learning_apply", "plan_learning_forget", "plan_propose", "plan_proposal_clear", "plan_anchors_set", "layer_save", "layer_list", "layer_delete", "airports_near", "advisory_disclaimer_ack",
+    "ground_test_how", "ground_test_confirm", "ground_test_reset",
 )
 
 /** Wire format shared by the WebSocket ground-station link and the MCP tools. */

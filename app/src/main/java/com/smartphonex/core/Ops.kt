@@ -502,6 +502,9 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
     private val fenceFile = File(dir, "fences.json")
     private val missionFile = File(dir, "mission.json")
     private val planFile = File(dir, "plan.json")
+    private val groundTestFile = File(dir, "groundtest.json")
+    /** The ground test's evidence, per vehicle (GroundTest.kt). */
+    val groundTest = GroundTest({ System.currentTimeMillis() }) { store(groundTestFile, it) }
     /** The plan file a person sent, while its compiled mission is the one loaded. */
     @Volatile private var loadedPlan: JsonObject? = null
     /** The plan a person last checked: what they're working on, for the AI to read. */
@@ -537,6 +540,7 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
     @Volatile var appChecks: List<() -> Check?> = emptyList()
     @Volatile var diagRunning: String? = null; private set
     private val clientTests = HashMap<String, Pair<String, String>>()
+    private val clientTestAt = HashMap<String, Long>()
     private val reportsDir = File(dir, "tests")
     @Volatile var gamepad: String? = null
 
@@ -551,6 +555,7 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         }
         missions.onEvery = { t, item, i -> fire(t, Source.BEHAVIOR, "along the leg to point ${i + 1}" + (item.step?.let { " (step $it)" } ?: "")) }
         missions.onMiss = { rt.log.event("mission", "phone", "miss", it) }
+        runCatching { if (groundTestFile.exists()) groundTest.load(groundTestFile.readText()) }
         runCatching {
             Json.parseToJsonElement(triggerFile.readText()).jsonObject.forEach { (v, a) ->
                 val m = triggers.getOrPut(v) { LinkedHashMap() }
@@ -750,6 +755,7 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
                 if (abs(v) > limit) return no("out_of_range", "this test is limited to +/-$limit")
                 if (c?.kind != ChannelKind.SERVO && c != null && a.b("confirmed") != true) return no("needs_confirm", "Confirm props are off or wheels are off the ground")
                 tester.hold(source, out, v)?.let { return no("not_permitted", it) }
+                groundTest.outputRun(vehicle, out, v)
                 CommandResult.OK
             }
             "test_stop" -> { tester.stop(); CommandResult.OK }
@@ -779,7 +785,23 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
             }
             "test_record" -> {
                 val t = a.s("test") ?: return no("malformed", "test is required")
-                synchronized(clientTests) { clientTests[t.take(30)] = (a.s("status") ?: "warn") to (a.s("detail")?.take(200) ?: "") }
+                synchronized(clientTests) { clientTests[t.take(30)] = (a.s("status") ?: "warn") to (a.s("detail")?.take(200) ?: ""); clientTestAt[t.take(30)] = System.currentTimeMillis() }
+                CommandResult.OK
+            }
+            "ground_test_how" -> {
+                val h = when (a.s("how")) { "walk" -> GroundTest.How.WALK; "drive" -> GroundTest.How.DRIVE; else -> return no("malformed", "how must be walk or drive") }
+                groundTest.setHow(vehicle, h)
+                CommandResult.OK
+            }
+            "ground_test_confirm" -> {
+                val ok = a.b("ok") ?: return no("malformed", "ok must be true or false")
+                groundTest.confirmOutputs(vehicle, outputsForTest(), ok, source.name.lowercase())?.let { return no("not_permitted", it) }
+                rt.log.event("groundtest", source.name, "outputs", if (ok) "Outputs move the right way" else "An output moves the wrong way")
+                CommandResult.OK
+            }
+            "ground_test_reset" -> {
+                groundTest.reset(vehicle)
+                rt.log.event("groundtest", source.name, "reset", "Ground test started again")
                 CommandResult.OK
             }
             "face_express" -> {
@@ -1213,6 +1235,7 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
             if (est != null && est.health != GpsGuard.Health.LOST) outerLimit(f, est.lat, est.lon)
             if (b != null && breachReason == null) {
                 rt.log.event("failsafe", "phone", "fence", "Fence: $b. Action: ${f.action}")
+                groundTest.fenceCaught(vehicle, b, f.action)
                 when (f.action) {
                     "hold" -> { missions.pause(); rt.fc.force(FlightMode.HOLD, "fence: $b") }
                     "home" -> { missions.abort(); rt.fc.force(FlightMode.RETURN_HOME, "fence: $b") }
@@ -1236,6 +1259,42 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         }
         if (armed) contingencies(now, est) else { timeWarned = false; timeActed = false; motorActed = false; outerActed = false }
         if (armed) learnTick(now) else { climbFrom = null; glideFrom = null }
+        groundTest.tick(vehicle, missions.mission?.name, missions.state, missions.index, missions.mission?.items ?: emptyList(),
+            est?.lat, est?.lon, est?.health == GpsGuard.Health.GOOD, g?.speedMps, missions.lateS)
+    }
+
+    /** Outputs a ground test runs, and whether each only goes forward. */
+    private fun outputsForTest(): List<Pair<String, Boolean>> =
+        rt.engine.device?.takeIf { rt.profiles.active.adapter == "device" }?.actuators?.map { it.id to false }
+            ?: rt.profiles.active.channels.map { it.name to (it.kind == ChannelKind.MOTOR_FORWARD) }
+
+    /** STOP arrived; [armed] is whether it was armed just before. Evidence for the ground test. */
+    fun stopEvidence(source: Source, armed: Boolean) {
+        val est = rt.fc.navEstimate()
+        val g = rt.fc.gpsNow
+        groundTest.stopped(vehicle, source.name, armed, g?.speedMps, est?.lat, est?.lon)
+        if (armed) rt.log.event("groundtest", source.name, "stop", "STOP while armed")
+    }
+
+    /** The self-test and link stages come from the test reports. */
+    fun groundTestJson(): JsonObject {
+        val extra = HashMap<String, GroundTest.Stage>()
+        lastDiag?.let { d ->
+            if ((d["device"] as? JsonPrimitive)?.content == vehicle) {
+                val t = d["t"]!!.jsonPrimitive.long
+                val results = (d["results"] as? JsonArray)?.map { it.jsonObject } ?: emptyList()
+                val passed = (d["passed"] as? JsonPrimitive)?.boolean == true
+                val failed = results.firstOrNull { it["status"]?.jsonPrimitive?.content == "fail" }
+                val old = System.currentTimeMillis() - t > 24 * 3600_000L
+                extra["selftest"] = GroundTest.Stage(if (!passed) "fail" else if (old) "warn" else "pass",
+                    if (!passed) "Failed: ${failed?.get("test")?.jsonPrimitive?.content}: ${failed?.get("detail")?.jsonPrimitive?.content}" else "Passed" + if (old) ", over a day ago: run it again before driving" else "", t)
+                results.firstOrNull { it["test"]?.jsonPrimitive?.content == "Link" }?.let { l ->
+                    extra["link"] = GroundTest.Stage(l["status"]!!.jsonPrimitive.content.let { if (it == "ok") "pass" else it }, l["detail"]?.jsonPrimitive?.content ?: "", t)
+                }
+            }
+        }
+        synchronized(clientTests) { clientTests["Link"]?.let { it to (clientTestAt["Link"] ?: 0L) } }?.let { (r, at) -> extra["link"] = GroundTest.Stage(if (r.first == "ok") "pass" else r.first, r.second, at) }
+        return groundTest.json(vehicle, extra, outputsForTest())
     }
     private var lastTickSlow = 0L
 
@@ -1399,7 +1458,7 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
                 val ms = rt.controller.stopDrill(); add("Stop", if (ms != null && ms < 1000) "pass" else "fail", if (ms == null) "Didn't reach safe state" else "Outputs safe in $ms ms") }
             step("Failsafe") {
                 val r = rt.controller.failsafeDrill()
-                add("Link-loss failsafe", if (r.first != null) "pass" else "fail", r.second) }
+                add("Link-loss failsafe", r.first?.let { if (it - rt.profiles.active.commandTimeoutMs <= LINK_LOSS_LAG_MS) "pass" else "warn" } ?: "fail", r.second) }
             val battery = rt.fc.batteryNow
             step("Power") { add("Battery", if (battery == null || battery > 20) "pass" else "warn", battery?.let { "${it.toInt()}%" } ?: "Unknown") }
             synchronized(clientTests) { clientTests.forEach { (k, v) -> add(k, v.first, v.second) }; clientTests.clear() }
@@ -1587,6 +1646,7 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         put("diag", diagRunning)
         put("ground", rt.groundLinks.get())
         lastDiag?.let { put("report", it) }
+        put("groundTest", groundTestJson())
         put("checklist", JsonArray(checklistItems().map { i -> buildJsonObject { put("item", i); put("done", i in checklist) } }))
         put("trims", trims.json(outputNames()))
         put("connections", checksJson(connections()))
@@ -1618,6 +1678,8 @@ class Ops(private val rt: VehicleRuntime, private val dir: File) {
         const val WEAK_SIGNAL = 30.0
         const val MAX_PHOTOS = 500
         const val MAX_LOG_ROWS = 20_000
+        /** How long after the link timeout the failsafe may take to act: a few control loops. */
+        const val LINK_LOSS_LAG_MS = 200L
         val AI_ALLOWED = setOf("plan_check", "plan_propose", "layer_list", "airports_near", "plan_list", "plan_load", "plan_export_qgc", "plan_import_qgc", "plan_learning", "trigger_fire", "mission_upload", "mission_pause", "mission_abort", "face_express", "face_show")
     }
 }

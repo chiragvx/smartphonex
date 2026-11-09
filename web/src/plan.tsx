@@ -57,6 +57,16 @@ const KIND_LABEL: Record<string, string> = {
 type Draft = { plan: PlanFile; fence: FenceData };
 let draft: Draft = { plan: emptyPlan(), fence: emptyFence() };
 let loadedFromPhone = false;
+let fitNext = false;
+
+/** Opens a plan made elsewhere (the ground test) in the editor, for a person to look at, move and send. Undo brings back what was there. */
+export function openDraft(plan: any, fence?: FenceData) {
+  undoStack.push(copy(draft));
+  draft = { plan: normalise(copy(plan)), fence: fence ? { ...emptyFence(), ...copy(fence) } : copy(draft.fence) };
+  if (fence) fenceSent = false;
+  loadedFromPhone = true;
+  fitNext = true;
+}
 let fenceSent = true;
 let anchorsDraft: { name: string; lat: number; lon: number }[] | null = null;
 const undoStack: Draft[] = [];
@@ -338,6 +348,13 @@ function MapPlan() {
     }
   };
 
+  useEffect(() => {
+    if (!fitNext) return;
+    fitNext = false;
+    const pts = [...(draft.plan.steps.map(anchor).filter(Boolean) as LL[]), ...draft.fence.polygon];
+    if (pts.length) mapRef.current?.fit(pts.map(([lat, lon]) => ({ lat, lon })));
+    queueCheck();
+  }, []);
   // The first time, start from what's on the phone: the sent plan and the fence.
   const phone = S.ops;
   useEffect(() => {

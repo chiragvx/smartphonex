@@ -1,7 +1,7 @@
 import { render } from 'preact';
 import { useState } from 'preact/hooks';
 import './style.css';
-import { ackAlert, armed, authQuery, cmd, isMuted, isOperator, pair, S, setMuted, stale, staleMs, start, useStore } from './store';
+import { ackAlert, armed, authQuery, cmd, isMuted, isOperator, nav, pair, S, setMuted, stale, staleMs, start, useStore } from './store';
 import { setTileVia } from './map';
 import { applySun, getSun, modeLabel } from './parts';
 import { Operate } from './operate';
@@ -122,6 +122,7 @@ function Toasts() {
 function App() {
   useStore();
   const [page, setPage] = useState<Page>((PAGES.find(p => p[0] === initialPage)?.[0] as Page) ?? 'operate');
+  nav.go = p => { if (PAGES.some(x => x[0] === p)) setPage(p as Page); };
   if (S.needPair && !S.relay) return <Pairing />;
   return (
     <div class="shell">
