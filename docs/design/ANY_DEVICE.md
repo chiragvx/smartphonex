@@ -160,7 +160,7 @@ This relaxes "USB-UART and nothing more" only when someone wants a receiver *and
 
 ### Correction to the flight controller plan
 
-`FLIGHT_CONTROLLER.md` proposes a receiver's own failsafe as the backstop if the phone dies. That assumes a receiver can drive servos from its
+[FLIGHT_CONTROLLER.md](FLIGHT_CONTROLLER.md) proposes a receiver's own failsafe as the backstop if the phone dies. That assumes a receiver can drive servos from its
 serial input, which many can't, since their outputs follow the radio link (verify). So commissioning must test what really happens, not assume it.
 
 ## 6. The receiver: running without internet

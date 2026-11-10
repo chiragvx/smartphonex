@@ -1,5 +1,8 @@
 # Contributing
 
+Thanks for helping. To build and run each part, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). To see how it fits together, see
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Bugs, ideas and phone reports each have an issue template.
+
 Devices, protocols, gaits and phone reports are all welcome. For a phone, attach its report from **Setup, App health** to an issue: see [docs/PHONES.md](docs/PHONES.md). Contributions are accepted under the Apache-2.0 license.
 
 ## Adding a device pack

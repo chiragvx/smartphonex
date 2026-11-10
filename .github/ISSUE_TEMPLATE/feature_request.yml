@@ -1,0 +1,22 @@
+name: Idea or request
+description: A device, protocol, screen or feature you'd like
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What you're trying to do
+      description: The job, not the solution. What device, what situation?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+  - type: checkboxes
+    id: rules
+    attributes:
+      label: The rules that stay
+      options:
+        - label: This doesn't need anything to bypass STOP, limits, sign-off or a person's approval (see CONTRIBUTING.md).
+          required: true

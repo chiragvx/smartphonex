@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/chiragvx/smartphonex/security/advisories/new
+    about: Please report vulnerabilities privately, not as an issue.
+  - name: Read the docs
+    url: https://github.com/chiragvx/smartphonex/tree/main/docs
+    about: Getting started, the ground station guide, hardware and safety.

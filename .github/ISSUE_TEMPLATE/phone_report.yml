@@ -1,0 +1,33 @@
+name: Phone report
+description: Add your phone to the list of phones that work
+title: "Phone: "
+labels: [phone-report]
+body:
+  - type: markdown
+    attributes:
+      value: Download the report from **Setup → App health → Download phone report** in the ground station, and attach it below. See docs/PHONES.md.
+  - type: input
+    id: model
+    attributes:
+      label: Phone model
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where GPS was measured
+      options: [Outside, Indoors, Both]
+    validations:
+      required: true
+  - type: textarea
+    id: report
+    attributes:
+      label: The report
+      description: Drag the file in here.
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: USB host, battery settings you had to change, stops, anything odd.

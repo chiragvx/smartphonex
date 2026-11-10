@@ -3,7 +3,7 @@
 **Goal:** one ground station for anything. It should work the same way for a boat, plane, arm or biped, and do what
 a dedicated ground control app does: test, arm, trigger, plan waypoints, watch live video, review logs, and more.
 
-Status: **Phase 1 is built** (app build 10). Section 14 lists what's been tested and what's still to do. Phase 2 is now part of `ROADMAP.md`.
+Status: **Phase 1 is built** (app build 10). Section 14 lists what's been tested and what's still to do. Phase 2 is now part of [ROADMAP.md](../../ROADMAP.md).
 
 ## 1. Rules
 
@@ -30,6 +30,7 @@ Always on screen, in all of them: device name, armed state (with time armed), wh
 
 How the screens are laid out:
 
+- **Operate views:** Map, Video or Split (side by side; stacked on a phone). In Map or Video, an inset in the corner shows the other one (video only while the camera is on), with Swap to make it the main view. **Map window** and **Video window** open either in a window of its own for a second screen: it has the status bar and STOP (STOP, Space and the gamepad's stop all work there), but it only watches, and never sends sticks, so it can't fight the window that's driving. The choice is kept per browser.
 - **Operate:** the map or video carries height above home, speed, distance and direction home, and flight time left, beside the horizon. The side column puts what matters in a run first: arm (with a Ready or "n to fix" badge), mission, safety, mode and triggers. Face, all numbers, outputs and joints close to their title, and each browser remembers which are open.
 - **Plan:** tools are grouped as Route, Safety and Place. Keys: Ctrl+Z and Ctrl+Y undo and redo, Enter finishes an outline, Escape cancels it or clears the selection, Delete removes the selected step. A new plan asks first.
 - **Setup:** a row of section links stays at the top.

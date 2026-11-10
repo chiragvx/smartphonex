@@ -20,7 +20,7 @@ release notes unless you'd rather we didn't.
 ## Out of scope
 
 - Attacks that need someone already holding the phone unlocked, or the relay's server.
-- The temporary tunnel used for testing (`PHASE2.md`). It isn't a deployment.
+- The temporary tunnel used for testing ([PHASE2.md](docs/design/PHASE2.md)). It isn't a deployment.
 - Physical safety problems with no software cause. Those belong in a normal issue.
 
 ## Supported versions

@@ -1,6 +1,6 @@
 # SmartPhoneX plan (v1.1)
 
-Updates `prd1.0.txt`, which is kept as the original. Where they differ, this file wins.
+Updates [PRD-1.0.txt](PRD-1.0.txt), which is kept as the original. Where they differ, this file wins.
 This is an experiment: losing a car or a phone is acceptable.
 
 ## Decisions
@@ -85,7 +85,7 @@ Verified on the real phone over real 4G LTE (full signal) and public HTTPS, on b
 QR setup (build 6), verified on an Android 16 emulator only: 12 flow checks plus relay and browser
 tests. A real camera scan, the Xiaomi browser and scanner hand-off, and HTTPS on this flow are untested.
 
-Not yet verified, and needed to finish Phase 2 (see `PHASE2.md`):
+Not yet verified, and needed to finish Phase 2 (see [PHASE2.md](PHASE2.md)):
 - 5G, weak signal, handovers, Wi-Fi to cellular, and airplane-mode recovery on the real phone.
 - The phone's on-screen controls with no network. Over USB, with no SIM and Wi-Fi off, `tools/e2e.mjs`
   passed 52/52 on build 6 at 50 Hz.
@@ -95,12 +95,12 @@ Relay hosting is temporary: this PC plus a `cloudflared` tunnel. A permanent hos
 
 ## Next
 
-- Phase 2: run `PHASE2.md` with the SIM.
+- Phase 2: run [PHASE2.md](PHASE2.md) with the SIM.
 - See "Any vehicle, any device" below.
-- Flight controller: see `FLIGHT_CONTROLLER.md`.
-- Any robotic device, set up with any LLM: see `ANY_DEVICE.md`.
-- Universal ground station: Phase 1 built, walk test outstanding. See `GROUND_STATION.md`, section 14.
-- Phases from here to 1.0, including customization: see `ROADMAP.md`.
+- Flight controller: see [FLIGHT_CONTROLLER.md](FLIGHT_CONTROLLER.md).
+- Any robotic device, set up with any LLM: see [ANY_DEVICE.md](ANY_DEVICE.md).
+- Universal ground station: Phase 1 built, walk test outstanding. See [GROUND_STATION.md](GROUND_STATION.md), section 14.
+- Phases from here to 1.0, including customization: see [ROADMAP.md](../../ROADMAP.md).
 
 ## Saved for later
 
@@ -144,7 +144,7 @@ To verify in the live test on a real phone:
 - Whether Android kills the service in the background. It hasn't been seen yet.
 
 Still open:
-- 5G, weak signal, handovers, Wi-Fi to cellular, and airplane mode (`PHASE2.md`).
+- 5G, weak signal, handovers, Wi-Fi to cellular, and airplane mode ([PHASE2.md](PHASE2.md)).
 - A real USB-UART adapter class, when there is a car and adapter to test it with.
 
 Known limits on real vehicles:

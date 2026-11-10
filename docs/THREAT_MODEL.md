@@ -47,4 +47,4 @@ What SmartPhoneX defends against, how, and what it doesn't. Update this file in 
 - **No general rate limits on the relay.** Sign-in and enrollment lock out, but other endpoints don't limit request rates (planned).
 - **The token is long-lived.** Rotating it means reinstalling or clearing data today (planned: rotate from the phone).
 - **Release builds aren't shrunk or obfuscated.** That isn't a security boundary, but it's noted.
-- **No external review yet.** Planned before 1.0, per `ROADMAP.md`.
+- **No external review yet.** Planned before 1.0, per [ROADMAP.md](../ROADMAP.md).

@@ -3,8 +3,8 @@
 **Goal:** a project anyone can install on an ordinary phone, connect to their own device, and shape to fit it, without
 writing code, asking us, or trusting a cloud service. It should be complete enough that people stop needing a second app.
 
-Status: Phase 1 in progress (section 4 has what's done). This replaces the Phase 2 table in `GROUND_STATION.md` section 12, and gathers the "Saved for later"
-items from `PLAN.md` and `ANY_DEVICE.md`. Sizes are relative (S, M, L, XL), not time estimates.
+Status: Phase 1 in progress (section 4 has what's done). This replaces the Phase 2 table in [GROUND_STATION.md](docs/design/GROUND_STATION.md) section 12, and gathers the "Saved for later"
+items from [PLAN.md](docs/design/PLAN.md) and [ANY_DEVICE.md](docs/design/ANY_DEVICE.md). Sizes are relative (S, M, L, XL), not time estimates.
 
 ## 1. Where we are (0.6, build 10)
 

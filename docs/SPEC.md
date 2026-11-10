@@ -55,7 +55,7 @@ values, and have no other abilities. At most 200 nodes and 16 levels. Values: `a
 | An AI provider | Implement `Provider` (`Assistant.kt`), or point the assistant at any OpenAI-compatible address |
 | A ground station | Use the WebSocket messages below, or MCP or HTTP |
 
-Sandboxed code plugins (tier 3 in `ANY_DEVICE.md`) aren't implemented yet. Controllers currently ship in the app.
+Sandboxed code plugins (tier 3 in [ANY_DEVICE.md](design/ANY_DEVICE.md)) aren't implemented yet. Controllers currently ship in the app.
 
 ## Connecting from outside
 

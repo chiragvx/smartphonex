@@ -1,0 +1,47 @@
+name: Bug report
+description: Something doesn't work as it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **Security problems go through private reporting instead:** see SECURITY.md.
+        If anything moved that shouldn't have, say so first.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen again
+      placeholder: "1. ...\n2. ...\n3. ..."
+  - type: dropdown
+    id: part
+    attributes:
+      label: Which part
+      options: [Phone app, Ground station, Relay, MCP or HTTP tools, Hardware output, Docs, Other]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Shown in Setup → App health.
+  - type: input
+    id: phone
+    attributes:
+      label: Phone and Android version
+  - type: dropdown
+    id: hardware
+    attributes:
+      label: Was real hardware connected?
+      options: [No, "Yes, outputs closed (preview only)", "Yes, signed off and live"]
+  - type: textarea
+    id: logs
+    attributes:
+      label: Phone report or logs
+      description: Attach the phone report from Setup → App health if you can. It has no location, serial number or account.
