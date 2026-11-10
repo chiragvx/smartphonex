@@ -79,9 +79,11 @@ function GroundTestPanel() {
     <Panel title="Ground test" id="groundTest" right={<span class={`pill ${gt.done ? 'good' : 'off'}`} id="groundTestScore">{gt.passed} of {gt.needed}</span>}>
       <p class="dim">What the vehicle has been seen to do, measured by the phone. Do them in order, outdoors for the last ones.</p>
       {isOperator() && <div class="row">
-        <span class="dim">How:</span>
+        <span class="dim">How</span>
+        <div class="toolGroup" role="tablist">
         <button data-how="walk" class={gt.how === 'walk' ? 'sel' : ''} onClick={() => cmd('ground_test_how', { how: 'walk' }, { quiet: true })}>Walk it</button>
         <button data-how="drive" class={gt.how === 'drive' ? 'sel' : ''} onClick={() => cmd('ground_test_how', { how: 'drive' }, { quiet: true })}>Drive it</button>
+        </div>
       </div>}
       <p class="dim small">{gt.how === 'walk'
         ? 'Walk it: carry the phone round the plan, armed, with nothing connected that can move. It proves navigation, arrivals, timing and the fence on real GPS.'

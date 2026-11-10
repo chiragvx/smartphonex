@@ -282,6 +282,8 @@ function openVideo() {
 
 const keys = new Set<string>();
 const typing = () => { const a = document.activeElement?.tagName; return a === 'INPUT' || a === 'TEXTAREA' || a === 'SELECT'; };
+/** Set in a pop-out window. It shows a view, and can STOP, but never sends sticks. */
+export const viewOnly = { on: false };
 export const pointerSticks = { active: false, t: 0, s: 0, p: 0, r: 0 };
 let beat = 0;
 let padStopWas = false;
@@ -306,6 +308,8 @@ function controlTick() {
   if (!S.tel || !isOperator() || !profile) return;
   const hiddenLong = S.hidden && Date.now() - S.hiddenSince > 10000;
   const pad = readGamepad();
+  // A pop-out window (a second screen) only watches: its zero sticks must never fight the window that's driving.
+  if (viewOnly.on) return;
   let t = keyAxis(['KeyW', 'ArrowUp'], ['KeyS', 'ArrowDown']);
   let s = keyAxis(['KeyA', 'ArrowLeft'], ['KeyD', 'ArrowRight']);
   let p = keyAxis(['KeyI'], ['KeyK']);

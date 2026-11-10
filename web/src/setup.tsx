@@ -328,7 +328,7 @@ const SECTIONS: [string, string][] = [['device', 'Device'], ['setup-assistant', 
 
 export function Setup() {
   return (
-    <>
+    <div class="withIndex">
     <nav class="jump" aria-label="Setup sections">
       {SECTIONS.filter(([id]) => !S.relay || (id !== 'backup' && id !== 'app-health')).map(([id, name]) => (
         <a key={id} href={`#sec-${id}`} onClick={e => { e.preventDefault(); document.getElementById(`sec-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}>{name}</a>
@@ -338,6 +338,6 @@ export function Setup() {
       <div><Device /><Assistant /><Trim /><Connect />{!S.relay && <Backup />}{!S.relay && <AppHealth />}</div>
       <div><Triggers /><Settings /><Sensors /><Camera /></div>
     </div>
-    </>
+    </div>
   );
 }

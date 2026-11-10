@@ -211,13 +211,17 @@ export function useMap(setup: (m: TileMap) => void) {
 }
 
 export function LayerSwitch({ map }: { map: TileMap | null }) {
-  return (
+  return (<>
+    <div class="zoomCtl" role="group" aria-label="Zoom">
+      <button aria-label="Zoom in" title="Zoom in" onClick={() => map?.zoomBy(1)}>+</button>
+      <button aria-label="Zoom out" title="Zoom out" onClick={() => map?.zoomBy(-1)}>−</button>
+    </div>
     <div class="maplayer">
       {(['satellite', 'street'] as Layer[]).map(l => (
         <button key={l} class={map?.layer === l ? 'sel' : ''} onClick={() => { if (!map) return; map.layer = l; try { localStorage.setItem('spx-layer', l); } catch { /* Fine. */ } map.draw(); }}>{l === 'satellite' ? 'Satellite' : 'Street'}</button>
       ))}
     </div>
-  );
+  </>);
 }
 
 export const canAct = () => isOperator() && !!S.tel;

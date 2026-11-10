@@ -3,6 +3,10 @@
 export type LatLon = { lat: number; lon: number };
 export type Layer = 'satellite' | 'street';
 const TILE = 256;
+/** Zoom levels: tiles stop at 19, and the last two stretch them, for small plans like a 20 m test square. */
+const MIN_ZOOM = 2, MAX_ZOOM = 21;
+/** How far the map moves before a press counts as a drag rather than a click, in pixels. */
+const DRAG_START = 5;
 const SOURCES: Record<Layer, { url: (z: number, x: number, y: number) => string; credit: string; maxZ: number }> = {
   satellite: { url: (z, x, y) => `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`, credit: 'Imagery Esri, Maxar, Earthstar Geographics', maxZ: 19 },
   street: { url: (z, x, y) => `https://tile.openstreetmap.org/${z}/${x}/${y}.png`, credit: '© OpenStreetMap contributors', maxZ: 19 },
@@ -37,7 +41,9 @@ export class TileMap {
   private g: CanvasRenderingContext2D;
   private dead = false;
   private pointers = new Map<number, { x: number; y: number }>();
-  private pinch = 0;
+  private pinch: { spread: number; zoom: number; mid: { x: number; y: number } } | null = null;
+  /** Where an eased zoom is heading, and the screen point that stays put while it does. */
+  private target: { zoom: number; x: number; y: number } | null = null;
   private dragging: 'map' | 'item' | null = null;
   private moved = 0;
   private ro: ResizeObserver;
@@ -50,7 +56,11 @@ export class TileMap {
     c.addEventListener('wheel', e => {
       e.preventDefault();
       const r = c.getBoundingClientRect();
-      this.zoomAt(e.clientX - r.left, e.clientY - r.top, e.deltaY < 0 ? 1 : -1);
+      // A mouse notch (about 100 px) is half a level; a trackpad's many small steps add up the same way.
+      // Ctrl+wheel is a trackpad pinch, whose steps are smaller.
+      const px = e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 600 : 1);
+      const step = Math.max(-0.75, Math.min(0.75, -px * (e.ctrlKey ? 0.012 : 0.005)));
+      this.easeZoom(e.clientX - r.left, e.clientY - r.top, step);
     }, { passive: false });
     c.addEventListener('pointerdown', e => this.down(e));
     c.addEventListener('pointermove', e => this.move(e));
@@ -74,18 +84,47 @@ export class TileMap {
   private get h() { return this.c.clientHeight; }
   metersPerPixel() { return 156543.03 * Math.cos(this.center.lat * Math.PI / 180) / 2 ** this.zoom; }
 
-  zoomAt(x: number, y: number, dir: number) {
-    const before = this.fromScreen(x, y);
-    this.zoom = Math.max(2, Math.min(SOURCES[this.layer].maxZ, this.zoom + dir));
-    const after = this.fromScreen(x, y);
-    this.center = { lat: this.center.lat + before.lat - after.lat, lon: this.center.lon + before.lon - after.lon };
+  /** Sets the zoom straight away, keeping the map under screen point (x, y) where it is. */
+  zoomTo(x: number, y: number, zoom: number) {
+    const z = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom));
+    const p = this.fromScreen(x, y);
+    this.zoom = z;
+    // Put that same place back under (x, y).
+    const pp = project(p.lat, p.lon, z);
+    this.center = unproject(pp.x - (x - this.w / 2), pp.y - (y - this.h / 2), z);
     this.userMoved = true;
     this.draw();
+  }
+  /** Whole steps, for buttons and older callers. Eased, around (x, y). */
+  zoomAt(x: number, y: number, dir: number) { this.easeZoom(x, y, dir); }
+  /** Zooms by [by] levels around the middle, eased: for the + and − buttons. */
+  zoomBy(by: number) { this.easeZoom(this.w / 2, this.h / 2, by); }
+  private easeZoom(x: number, y: number, by: number) {
+    const from = this.target?.zoom ?? this.zoom;
+    this.target = { zoom: Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, from + by)), x, y };
+    this.userMoved = true;
+    this.step();
+  }
+  private stepping = false;
+  private step() {
+    if (this.stepping || this.dead) return;
+    this.stepping = true;
+    requestAnimationFrame(() => {
+      this.stepping = false;
+      const t = this.target;
+      if (!t) return;
+      const d = t.zoom - this.zoom;
+      // A third of the way each frame: about 150 ms to settle, smooth but never sluggish.
+      if (Math.abs(d) < 0.002) { this.zoomTo(t.x, t.y, t.zoom); this.target = null; return; }
+      this.zoomTo(t.x, t.y, this.zoom + d * 0.35);
+      this.step();
+    });
   }
   fit(points: LatLon[]) {
     if (!points.length) return;
     const lats = points.map(p => p.lat), lons = points.map(p => p.lon);
     this.center = { lat: (Math.min(...lats) + Math.max(...lats)) / 2, lon: (Math.min(...lons) + Math.max(...lons)) / 2 };
+    this.target = null;
     for (this.zoom = 19; this.zoom > 2; this.zoom--) {
       const a = project(Math.max(...lats), Math.min(...lons), this.zoom), b = project(Math.min(...lats), Math.max(...lons), this.zoom);
       if (b.x - a.x < this.w * 0.8 && b.y - a.y < this.h * 0.8) break;
@@ -99,10 +138,11 @@ export class TileMap {
     const p = this.pos(e);
     this.pointers.set(e.pointerId, p);
     this.moved = 0;
-    if (this.pointers.size === 2) { this.pinch = this.spread(); this.dragging = 'map'; return; }
+    if (this.pointers.size === 2) { this.target = null; this.pinch = { spread: this.spread(), zoom: this.zoom, mid: this.mid() }; this.dragging = 'map'; return; }
     this.dragging = this.onPress(this.fromScreen(p.x, p.y), p.x, p.y) ? 'item' : 'map';
   }
-  private spread() { const [a, b] = [...this.pointers.values()]; return Math.hypot(a.x - b.x, a.y - b.y); }
+  private spread() { const [a, b] = [...this.pointers.values()]; return Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)); }
+  private mid() { const [a, b] = [...this.pointers.values()]; return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
   private move(e: PointerEvent) {
     const last = this.pointers.get(e.pointerId);
     if (!last) return;
@@ -110,13 +150,18 @@ export class TileMap {
     this.pointers.set(e.pointerId, p);
     const dx = p.x - last.x, dy = p.y - last.y;
     this.moved += Math.abs(dx) + Math.abs(dy);
-    if (this.pointers.size === 2) {
-      const s = this.spread();
-      if (Math.abs(s - this.pinch) > 50) { this.zoomAt(this.w / 2, this.h / 2, s > this.pinch ? 1 : -1); this.pinch = s; }
+    if (this.pointers.size === 2 && this.pinch) {
+      // Two fingers: the zoom follows how far apart they are, and the map follows their middle.
+      const mid = this.mid();
+      const m = project(this.center.lat, this.center.lon, this.zoom);
+      this.center = unproject(m.x - (mid.x - this.pinch.mid.x), m.y - (mid.y - this.pinch.mid.y), this.zoom);
+      this.pinch.mid = mid;
+      this.zoomTo(mid.x, mid.y, this.pinch.zoom + Math.log2(this.spread() / this.pinch.spread));
       return;
     }
     if (this.dragging === 'item') { this.onDrag(this.fromScreen(p.x, p.y)); return; }
-    if (this.dragging === 'map') {
+    // A press that hasn't moved a few pixels is still a click: the map stays put.
+    if (this.dragging === 'map' && this.moved >= DRAG_START) {
       const m = project(this.center.lat, this.center.lon, this.zoom);
       this.center = unproject(m.x - dx, m.y - dy, this.zoom);
       this.userMoved = true;
@@ -126,9 +171,10 @@ export class TileMap {
   private up(e: PointerEvent) {
     const p = this.pointers.get(e.pointerId);
     this.pointers.delete(e.pointerId);
+    if (this.pointers.size < 2) this.pinch = null;
     if (!p || this.pointers.size) return;
     if (this.dragging === 'item') this.onRelease();
-    else if (this.moved < 6) this.onClick(this.fromScreen(p.x, p.y), p.x, p.y);
+    else if (this.moved < DRAG_START) this.onClick(this.fromScreen(p.x, p.y), p.x, p.y);
     this.dragging = null;
   }
 
@@ -152,6 +198,12 @@ export class TileMap {
     return t.complete && t.naturalWidth ? t : null;
   }
 
+  /** A tile already loaded, without asking for it. */
+  private cached(z: number, x: number, y: number) {
+    const t = this.tiles.get(`${this.layer}/${z}/${x}/${y}`);
+    return t && t.complete && t.naturalWidth ? t : null;
+  }
+
   private queued = false;
   draw() {
     if (this.queued || this.dead) return;
@@ -166,13 +218,25 @@ export class TileMap {
     g.setTransform(ratio, 0, 0, ratio, 0, 0);
     g.fillStyle = '#20262e';
     g.fillRect(0, 0, w, h);
-    const m = project(this.center.lat, this.center.lon, this.zoom);
-    const left = m.x - w / 2, top = m.y - h / 2, n = 2 ** this.zoom;
-    for (let ty = Math.floor(top / TILE); ty * TILE < top + h; ty++) {
+    // Tiles come in whole zoom levels; between them, the nearest level is drawn stretched or shrunk to fit.
+    const maxZ = SOURCES[this.layer].maxZ;
+    const tz = Math.max(MIN_ZOOM, Math.min(maxZ, Math.round(this.zoom)));
+    const scale = 2 ** (this.zoom - tz);
+    const size = TILE * scale;
+    const m = project(this.center.lat, this.center.lon, tz);
+    const left = m.x - w / 2 / scale, top = m.y - h / 2 / scale, n = 2 ** tz;
+    g.imageSmoothingQuality = 'high';
+    for (let ty = Math.floor(top / TILE); ty * TILE < top + h / scale; ty++) {
       if (ty < 0 || ty >= n) continue;
-      for (let tx = Math.floor(left / TILE); tx * TILE < left + w; tx++) {
-        const t = this.tile(this.zoom, ((tx % n) + n) % n, ty);
-        if (t) g.drawImage(t, Math.round(tx * TILE - left), Math.round(ty * TILE - top), TILE, TILE);
+      for (let tx = Math.floor(left / TILE); tx * TILE < left + w / scale; tx++) {
+        const x = Math.floor((tx * TILE - left) * scale), y = Math.floor((ty * TILE - top) * scale);
+        const s = Math.ceil(size) + 1;
+        const wx = ((tx % n) + n) % n;
+        const t = this.tile(tz, wx, ty);
+        if (t) { g.drawImage(t, x, y, s, s); continue; }
+        // Not loaded yet: the quarter of the coarser tile that covers it, so there's never a blank square.
+        const up = tz > MIN_ZOOM ? this.cached(tz - 1, wx >> 1, ty >> 1) : null;
+        if (up) g.drawImage(up, (wx & 1) * TILE / 2, (ty & 1) * TILE / 2, TILE / 2, TILE / 2, x, y, s, s);
       }
     }
     this.overlay(this, g);

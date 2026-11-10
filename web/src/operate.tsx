@@ -16,7 +16,7 @@ const NAV_TEXT: Record<string, string> = {
   good: 'Good', settling: 'GPS settling', degraded: 'GPS too rough to navigate', glitch: 'GPS jumped, checking it', lost: 'GPS position lost',
 };
 
-function MapView({ goHere }: { goHere: boolean }) {
+function MapView({ goHere, compact }: { goHere: boolean; compact?: boolean }) {
   const [, redraw] = useState(0);
   const { ref, map } = useMap((m: TileMap) => {
     m.overlay = (mm, g) => {
@@ -67,10 +67,10 @@ function MapView({ goHere }: { goHere: boolean }) {
   return (
     <div class="mapwrap">
       <canvas ref={ref} id="map" />
-      <LayerSwitch map={map.current} />
-      {!gps && <div class="onmap dim">No position yet. Turn on Location in Setup.</div>}
-      {gps?.nav && gps.nav.health !== 'good' && <div class="onmap" id="navWarn">{NAV_TEXT[gps.nav.health] ?? 'Navigation waits'} (±{Math.round(gps.nav.radius)} m). Missions and Return home wait, stopped.</div>}
-      <button class="center-on" onClick={() => { const m = map.current; if (m) { m.userMoved = false; m.draw(); } }}>Follow</button>
+      {!compact && <LayerSwitch map={map.current} />}
+      {!compact && !gps && <div class="onmap dim">No position yet. Turn on Location in Setup.</div>}
+      {!compact && gps?.nav && gps.nav.health !== 'good' && <div class="onmap" id="navWarn">{NAV_TEXT[gps.nav.health] ?? 'Navigation waits'} (±{Math.round(gps.nav.radius)} m). Missions and Return home wait, stopped.</div>}
+      {!compact && <button class="center-on" onClick={() => { const m = map.current; if (m) { m.userMoved = false; m.draw(); } }}>Follow</button>}
     </div>
   );
 }
@@ -93,16 +93,16 @@ function Readout() {
   );
 }
 
-function VideoView() {
+function VideoView({ compact }: { compact?: boolean }) {
   const v = S.video;
   const on = !!S.config?.camera?.enabled;
   useEffect(() => { setVideoWanted(true); return () => setVideoWanted(false); }, []);
   useEffect(() => setVideoWanted(true), [on]);
   return (
     <div class="video">
-      {v.url ? <img id="video" src={v.url} style={{ transform: v.rotate ? `rotate(${v.rotate}deg)` : '' }} /> : null}
+      {v.url && v.live ? <img id="video" src={v.url} style={{ transform: v.rotate ? `rotate(${v.rotate}deg)` : '' }} /> : null}
       {!v.live && <div class="onmap dim">{on ? 'Waiting for the camera...' : 'Camera is off'}</div>}
-      {v.live && <div class="videoInfo">{v.fps.toFixed(0)} fps · {Math.max(0, v.ageMs).toFixed(0)} ms old</div>}
+      {v.live && !compact && <div class="videoInfo">{v.fps.toFixed(0)} fps · {Math.max(0, v.ageMs).toFixed(0)} ms old</div>}
     </div>
   );
 }
@@ -137,7 +137,7 @@ function ModePanel() {
   const show = ['MANUAL', 'STABILIZE', 'HOLD_HEADING', 'RETURN_HOME', 'HOLD'];
   return (
     <Panel title={caps?.modeNoun ?? 'Mode'}>
-      <div class="chips" id="modes">
+      <div class="toolGroup segGrid" id="modes">
         {show.map(m => {
           const problem = modes[m];
           const cur = S.ops?.flightMode === m;
@@ -197,7 +197,7 @@ function SimPanel() {
         <label>Wind, m/s <input type="number" min="0" max="30" value={s.windMps} onChange={e => set({ windMps: Number(e.currentTarget.value) }, 'Wind')} /></label>
         <label>From, ° <input type="number" value={s.windFromDeg} onChange={e => set({ windFromDeg: Number(e.currentTarget.value) }, 'Wind')} /></label>
       </div>
-      <div class="row">
+      <div class="toolGroup">
         <button id="simMotor" class={s.motorFailed ? 'sel' : ''} onClick={() => set({ motorFailed: !s.motorFailed }, s.motorFailed ? 'Motor back' : 'Fail the motor')}>{s.motorFailed ? 'Motor failed' : 'Fail the motor'}</button>
         <button id="simLink" class={s.linkCut ? 'sel' : ''} onClick={() => set({ linkCut: !s.linkCut }, s.linkCut ? 'Link back' : 'Cut the link')}>{s.linkCut ? 'Link cut' : 'Cut the link'}</button>
         <button onClick={() => set({ reset: true }, 'Back to the start')} disabled={armed()}>Back to the start</button>
@@ -240,12 +240,12 @@ function FacePanel() {
   const status = face.blocked ? `Can't show: ${face.blocked}` : face.shown ? `Showing${face.requested ? `: ${face.requested}${face.held ? ', held' : ''}` : ''}` : 'Hidden';
   return (
     <Panel title="Face" fold="face" closed right={<span id="faceStatus" class={`pill ${face.blocked ? 'warn' : face.shown ? 'good' : 'off'}`}>{status}</span>}>
-      <div class="row">
+      <div class="toolGroup">
         <button id="faceShow" onClick={() => cmd('face_show', { show: true }, { label: 'Show face' })}>Show</button>
         <button id="faceHide" onClick={() => cmd('face_show', { show: false }, { label: 'Hide face' })}>Hide</button>
         <button id="faceAuto" class={face.requested ? '' : 'sel'} onClick={() => cmd('face_express', { expression: 'auto' }, { label: 'Automatic face' })} title="The face follows the device: alert when armed, looking where it turns, alarmed in failsafe">Automatic</button>
       </div>
-      <div class="chips" id="faceExpressions">
+      <div class="toolGroup segGrid four" id="faceExpressions">
         {EXPRESSIONS.map(e => <button key={e} data-expr={e} class={face.requested === e ? 'sel' : ''} onClick={() => cmd('face_express', { expression: e, seconds: hold }, { label: e })}>{e}</button>)}
       </div>
       <label class="row dim">For
@@ -256,9 +256,9 @@ function FacePanel() {
       <p class="dim">Safety always shows over an expression: failsafe looks alarmed, and kill shows crossed-out eyes.</p>
       <details>
         <summary>Look and when it shows</summary>
-        <div class="row">{['Off', 'When idle', 'Robot'].map((n, i) => <button key={n} data-face-mode={i} class={mode === i ? 'sel' : ''} onClick={() => set('FACE_MODE', i)}>{n}</button>)}</div>
+        <div class="toolGroup">{['Off', 'When idle', 'Robot'].map((n, i) => <button key={n} data-face-mode={i} class={mode === i ? 'sel' : ''} onClick={() => set('FACE_MODE', i)}>{n}</button>)}</div>
         <p class="dim">{mode === 0 ? 'Only shows when you press Show.' : mode === 1 ? `Comes up after ${param('FACE_IDLE_S') ?? 60} s untouched.` : 'The face is the main screen, and comes back a few seconds after the phone is used.'}</p>
-        <div class="row">{['Eyes', 'Eyes and mouth', 'Visor'].map((n, i) => <button key={n} data-face-style={i} class={style === i ? 'sel' : ''} onClick={() => set('FACE_STYLE', i)}>{n}</button>)}</div>
+        <div class="toolGroup">{['Eyes', 'Eyes and mouth', 'Visor'].map((n, i) => <button key={n} data-face-style={i} class={style === i ? 'sel' : ''} onClick={() => set('FACE_STYLE', i)}>{n}</button>)}</div>
         <div class="row">{FACE_HUES.map(([h, name]) => (
           <button key={h} data-face-hue={h} title={name} aria-label={name} class={Math.abs(hue - h) < 1 ? 'sel' : ''} onClick={() => set('FACE_HUE', h)}
             style={{ background: `hsl(${h} 90% 55%)`, width: '34px', height: '34px', borderRadius: '50%', padding: 0 }} />
@@ -350,28 +350,86 @@ function Outputs() {
   );
 }
 
+type Layout = 'map' | 'video' | 'split';
+const saved = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
+const save = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* Per visit, then. */ } };
+
+/** Opens one view in a window of its own, for a second screen. It watches only: it never sends sticks. STOP still works there. */
+export function popOut(kind: 'map' | 'video') {
+  window.open(`${location.pathname}#solo=${kind}`, `spx-${kind}`, 'popup,width=1100,height=680');
+}
+
+/** The flight numbers and horizon, over whichever view is the main one. */
+function Overlays() {
+  const fc = S.fc;
+  return <>
+    <Readout />
+    <div class="hud"><Horizon roll={fc?.a?.[0] ?? 0} pitch={fc?.a?.[1] ?? 0} heading={fc?.a?.[2]} stale={stale()} /></div>
+  </>;
+}
+
+/** A pop-out window: one view, full size, under the status bar and STOP. */
+export function SoloView({ kind }: { kind: string }) {
+  const hasMap = S.hello?.caps?.map !== false;
+  return (
+    <div class="views solo">
+      <div class="pane">{kind === 'map' && hasMap ? <MapView goHere={false} /> : <VideoView />}<Overlays /></div>
+    </div>
+  );
+}
+
 export function Operate() {
   const caps = S.hello?.caps;
   const hasMap = caps?.map !== false;
-  const [view, setView] = useState<'map' | 'video'>(hasMap ? 'map' : 'video');
+  const [layout, setLayoutRaw] = useState<Layout>(() => {
+    const l = saved('spx-layout') as Layout | null;
+    return !hasMap ? 'video' : l === 'map' || l === 'video' || l === 'split' ? l : 'map';
+  });
+  const [inset, setInsetRaw] = useState(saved('spx-inset') !== '0');
+  const setLayout = (l: Layout) => { setLayoutRaw(l); save('spx-layout', l); };
+  const setInset = (v: boolean) => { setInsetRaw(v); save('spx-inset', v ? '1' : '0'); };
   const [goHere, setGoHere] = useState(false);
-  const fc = S.fc;
   const cam = S.config?.camera;
   const profile = S.hello?.profiles?.find((p: any) => p.id === S.tel?.profile);
   const surfaces = profile?.channels?.some((c: any) => c.pitch || c.roll);
+  const main = layout === 'video' || !hasMap ? 'video' : 'map';
+  const other = main === 'map' ? 'video' : 'map';
+  // The inset only shows something worth seeing: the map always, video only while the camera is on.
+  const showInset = layout !== 'split' && inset && (other === 'map' ? hasMap : !!cam?.enabled);
+  const mapShown = hasMap && (main === 'map' || layout === 'split' || showInset);
+  const view = (k: string, compact = false) => (k === 'map' ? <MapView goHere={goHere} compact={compact} /> : <VideoView compact={compact} />);
   return (
     <div class="operate">
       <div class="mainView">
-        <div class="viewBar">
-          {hasMap && <button class={view === 'map' ? 'sel' : ''} onClick={() => setView('map')}>Map</button>}
-          <button class={view === 'video' ? 'sel' : ''} onClick={() => setView('video')}>Video</button>
-          {canAct() && <button id="camToggle" onClick={() => raw({ type: 'camera_cfg', enabled: !cam?.enabled })}>{cam?.enabled ? 'Camera off' : 'Camera on'}</button>}
-          {hasMap && view === 'map' && canAct() && <button class={goHere ? 'sel' : ''} onClick={() => setGoHere(!goHere)}>{goHere ? 'Tap the map...' : 'Go here'}</button>}
+        <div class="viewBar toolbar">
+          <div class="toolGroup" role="tablist" aria-label="Layout">
+            {hasMap && <button role="tab" aria-selected={layout === 'map'} class={layout === 'map' ? 'sel' : ''} onClick={() => setLayout('map')}>Map</button>}
+            <button role="tab" aria-selected={layout === 'video'} class={layout === 'video' ? 'sel' : ''} onClick={() => setLayout('video')}>Video</button>
+            {hasMap && <button role="tab" id="layoutSplit" aria-selected={layout === 'split'} class={layout === 'split' ? 'sel' : ''} title="Map and video side by side" onClick={() => setLayout('split')}>Split</button>}
+          </div>
+          <div class="toolGroup" aria-label="View options">
+            {hasMap && <button id="insetToggle" aria-pressed={inset} class={inset && layout !== 'split' ? 'sel' : ''} disabled={layout === 'split'} title="A small picture of the other view, in the corner. Swap it with the main one from there." onClick={() => setInset(!inset)}>Inset</button>}
+            {canAct() && <button id="camToggle" aria-pressed={!!cam?.enabled} class={cam?.enabled ? 'sel' : ''} title={cam?.enabled ? 'Turn the camera off' : 'Turn the camera on'} onClick={() => raw({ type: 'camera_cfg', enabled: !cam?.enabled })}>Camera</button>}
+            {hasMap && canAct() && <button aria-pressed={goHere} class={goHere ? 'sel' : ''} disabled={!mapShown} title="Then tap the map where it should go" onClick={() => setGoHere(!goHere)}>Go here</button>}
+          </div>
+          <div class="toolGroup popGroup" aria-label="Other screens">
+            {hasMap && <button id="popMap" title="Open the map in its own window, for a second screen" onClick={() => popOut('map')}>Map window</button>}
+            <button id="popVideo" title="Open the video in its own window, for a second screen" onClick={() => popOut('video')}>Video window</button>
+          </div>
+          {goHere && <span class="dim small">Tap the map where it should go</span>}
         </div>
-        {view === 'map' && hasMap ? <MapView goHere={goHere} /> : <VideoView />}
-        <Readout />
-        <div class="hud"><Horizon roll={fc?.a?.[0] ?? 0} pitch={fc?.a?.[1] ?? 0} heading={fc?.a?.[2]} stale={stale()} /></div>
-        {isOperator() && armed() && <Sticks surfaces={!!surfaces} />}
+        <div class={`views ${layout === 'split' ? 'split' : ''}`}>
+          <div class="pane">
+            {view(main)}
+            <Overlays />
+            {isOperator() && armed() && <Sticks surfaces={!!surfaces} />}
+            {showInset && <div class="inset" id="inset">
+              {view(other, true)}
+              <button class="insetSwap" title="Make this the main view" onClick={() => setLayout(other as Layout)}>Swap</button>
+            </div>}
+          </div>
+          {layout === 'split' && <div class="pane">{view(other)}</div>}
+        </div>
       </div>
       <aside class="side">
         <ArmPanel />

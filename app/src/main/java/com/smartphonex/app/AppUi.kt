@@ -31,6 +31,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -136,7 +137,14 @@ fun SmartPhoneXApp(activity: MainActivity) {
     val prefs = remember { activity.getSharedPreferences("app", Context.MODE_PRIVATE) }
     var contrast by remember { mutableStateOf(prefs.getBoolean("contrast", false)) }
     val scheme = if (contrast) lightColorScheme(background = Color.White, surface = Color.White, onBackground = Color.Black, onSurface = Color.Black, surfaceVariant = Color(0xFFE8E8E8), onSurfaceVariant = Color.Black, primary = Color.Black)
-    else darkColorScheme(background = Color(0xFF0E1116), surface = Color(0xFF161B22), surfaceVariant = Color(0xFF21262D), primary = Color(0xFF58A6FF))
+    // Pure black and white by default: high contrast, and black pixels cost nothing on an OLED screen.
+    else darkColorScheme(
+        background = Color.Black, surface = Color.Black, onBackground = Color.White, onSurface = Color.White,
+        surfaceVariant = Color(0xFF161616), onSurfaceVariant = Color(0xFFD0D0D0), outline = Color(0xFF3A3A3A), outlineVariant = Color(0xFF3A3A3A),
+        surfaceContainer = Color.Black, surfaceContainerLow = Color.Black, surfaceContainerHigh = Color(0xFF161616),
+        secondaryContainer = Color(0xFF2A2A2A), onSecondaryContainer = Color.White,
+        primary = Color.White, onPrimary = Color.Black,
+    )
     MaterialTheme(colorScheme = scheme) {
         Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
             var rt by remember { mutableStateOf<VehicleRuntime?>(null) }
@@ -265,7 +273,7 @@ private fun Root(activity: MainActivity, rt: VehicleRuntime, contrast: Boolean, 
 private fun TopBar(rt: VehicleRuntime, f: Frame) {
     val camLive = VehicleService.cameraStreamer?.isLive == true
     val locLive = rt.sensors.config("phone.location")?.enabled == true
-    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal = 12.dp, vertical = 8.dp)) {
+    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).drawBehind { drawLine(Off.copy(alpha = .5f), androidx.compose.ui.geometry.Offset(0f, size.height), androidx.compose.ui.geometry.Offset(size.width, size.height), 1f) }.padding(horizontal = 12.dp, vertical = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(f.profile.name, fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.weight(1f))
             val (label, color) = when {
@@ -290,13 +298,14 @@ private fun TopBar(rt: VehicleRuntime, f: Frame) {
             val fails = f.slow?.readiness?.count { it.status == "fail" } ?: 0
             if (!f.armed && !f.killed) Text(if (fails == 0) "Ready to arm" else "$fails to fix", color = if (fails == 0) Good else Warn, fontWeight = FontWeight.Bold, fontSize = 13.sp)
         }
-        if (camLive || locLive) Text(listOfNotNull("CAMERA LIVE".takeIf { camLive }, "LOCATION SHARED".takeIf { locLive }).joinToString("  ·  "), color = Bad, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        // Always the same height, so the screen doesn't jump when the camera or location goes on.
+        Text(listOfNotNull("CAMERA LIVE".takeIf { camLive }, "LOCATION SHARED".takeIf { locLive }).joinToString("  ·  ").ifEmpty { " " }, color = Bad, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
     }
 }
 
 @Composable
 private fun Card(title: String? = null, content: @Composable ColumnScope.() -> Unit) {
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surface).padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(Modifier.fillMaxWidth().border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(4.dp)).padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         if (title != null) Text(title, fontWeight = FontWeight.Bold, fontSize = 16.sp)
         content()
     }

@@ -5,7 +5,8 @@ import { gzipSync } from 'node:zlib';
 
 const web = new URL('../app/src/main/assets/web/assets/', import.meta.url);
 // Gzipped kilobytes. Raise one only on purpose, in the same change that needs it.
-const budget = { 'index.js': 40, 'index.css': 5, 'ticker.js': 3 };
+// Raised from 40 and 5 KB for planning phase 2 (plan tools, checks, 3D loader) and the no-card layout with pop-out views.
+const budget = { 'index.js': 54, 'index.css': 6, 'ticker.js': 3 };
 
 let failed = false;
 for (const [name, kb] of Object.entries(budget)) {
